@@ -1,0 +1,76 @@
+﻿<Window x:Class="LidairrCompanion.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:LidairrCompanion"
+        xmlns:helpers="clr-namespace:LidairrCompanion.Helpers"
+        mc:Ignorable="d"
+        Title="MainWindow" Height="659" Width="941">
+    <Grid Margin="0,0,0,8">
+        <Button x:Name="btn_Settings" Content="Settings" Margin="0,0,10,10" Click="btn_Settings_Click" Height="20" VerticalAlignment="Bottom" HorizontalAlignment="Right" Width="76" Grid.Row="1" Grid.Column="1"/>
+        <Button x:Name="btn_GetFilesFromLidarr" Content="Get Next Files" HorizontalAlignment="Left" Margin="10,10,0,0" VerticalAlignment="Top" Width="127" Click="btn_GetFilesFromLidarr_Click" Grid.ColumnSpan="2"/>
+        <ListView x:Name="list_CurrentFiles" Margin="10,35,85,0" Height="180" VerticalAlignment="Top" Grid.ColumnSpan="2">
+            <!-- Row colouring by Match enum (folders use greens, single-file matches use blues) -->
+            <ListView.ItemContainerStyle>
+                <Style TargetType="ListViewItem">
+                    <Setter Property="Background" Value="Transparent" />
+                    <Style.Triggers>
+                        <!-- Exact match: solid green -->
+                        <DataTrigger Binding="{Binding Match}" Value="{x:Static helpers:ReleaseMatchType.Exact}">
+                            <Setter Property="Background" Value="Green" />
+                        </DataTrigger>
+                        <!-- Artist - Album (folder): lighter green -->
+                        <DataTrigger Binding="{Binding Match}" Value="{x:Static helpers:ReleaseMatchType.ArtistFirst}">
+                            <Setter Property="Background" Value="LightGreen" />
+                        </DataTrigger>
+                        <!-- Album - Artist (folder): pale green -->
+                        <DataTrigger Binding="{Binding Match}" Value="{x:Static helpers:ReleaseMatchType.AlbumFirst}">
+                            <Setter Property="Background" Value="PaleGreen" />
+                        </DataTrigger>
+
+                        <!-- Single-file matches: blue / lightblue -->
+                        <DataTrigger Binding="{Binding Match}" Value="{x:Static helpers:ReleaseMatchType.ArtistFirstFile}">
+                            <Setter Property="Background" Value="Blue" />
+                            <Setter Property="Foreground" Value="White" />
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding Match}" Value="{x:Static helpers:ReleaseMatchType.AlbumFirstFile}">
+                            <Setter Property="Background" Value="LightBlue" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </ListView.ItemContainerStyle>
+
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="Title" DisplayMemberBinding="{Binding Title}" Width="200"/>
+                    <GridViewColumn Header="Output Path" DisplayMemberBinding="{Binding OutputPath}" Width="300"/>
+                    <GridViewColumn Header="ID" DisplayMemberBinding="{Binding Id}" Width="80"/>
+                    <GridViewColumn Header="Download ID" DisplayMemberBinding="{Binding DownloadId}" Width="200"/>
+                </GridView>
+            </ListView.View>
+        </ListView>
+        <Button x:Name="btn_AI_SearchMatch" Content="AI Search / Match" HorizontalAlignment="Left" Margin="10,432,0,0" Width="127" Click="btn_AI_SearchMatch_Click" Height="20" VerticalAlignment="Top"/>
+        <ListView x:Name="list_Proposed_Actions" d:ItemsSource="{d:SampleData ItemCount=5}" Margin="10,457,85,35">
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn/>
+                </GridView>
+            </ListView.View>
+        </ListView>
+        <ListView x:Name="list_Files_in_Release" Margin="10,220,85,0" Grid.RowSpan="2" VerticalAlignment="Top" Height="207" Grid.ColumnSpan="2">
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="Path" DisplayMemberBinding="{Binding Path}" Width="300"/>
+                    <GridViewColumn Header="Name" DisplayMemberBinding="{Binding Name}" Width="200"/>
+                    <GridViewColumn Header="ID" DisplayMemberBinding="{Binding Id}" Width="80"/>
+                </GridView>
+            </ListView.View>
+        </ListView>
+        <Button x:Name="btn_GetArtists" Content="Get Artists" Margin="0,10,85,0" Click="btn_GetArtists_Click" HorizontalAlignment="Right" VerticalAlignment="Top" Width="68" Grid.Column="1"/>
+        <Label x:Name="lbl_artistCount" Content="Get Artists..." Margin="0,7,12,0" HorizontalAlignment="Right" VerticalAlignment="Top" Grid.Column="1"/>
+        <Button x:Name="btn_autoReleaseMatchToArtist" Content="Auto Match" Margin="0,69,10,0" VerticalAlignment="Top" Click="btn_autoReleaseMatchToArtist_Click" HorizontalAlignment="Right" Grid.Column="1"/>
+        <Button x:Name="btn_manualReleaseMatchToArtist" Content="Match" Margin="0,44,10,0" VerticalAlignment="Top" Click="btn_manualReleaseMatchToArtist_Click" HorizontalAlignment="Right" Width="66" Grid.Column="1"/>
+
+    </Grid>
+</Window>
