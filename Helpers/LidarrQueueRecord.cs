@@ -20,6 +20,7 @@ namespace LidairrCompanion.Helpers
         private int _id;
         private string _downloadId;
         private ReleaseMatchType _match = ReleaseMatchType.None;
+        private string _matchedArtist = string.Empty;
 
         public string Title
         {
@@ -50,6 +51,13 @@ namespace LidairrCompanion.Helpers
         {
             get => _match;
             set => SetProperty(ref _match, value);
+        }
+
+        // New: name of the artist that this release was matched against (empty if none)
+        public string MatchedArtist
+        {
+            get => _matchedArtist;
+            set => SetProperty(ref _matchedArtist, value);
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;

@@ -6,11 +6,11 @@
         xmlns:local="clr-namespace:LidairrCompanion"
         xmlns:helpers="clr-namespace:LidairrCompanion.Helpers"
         mc:Ignorable="d"
-        Title="MainWindow" Height="659" Width="941">
+        Title="MainWindow" Height="966" Width="1150">
     <Grid Margin="0,0,0,8">
         <Button x:Name="btn_Settings" Content="Settings" Margin="0,0,10,10" Click="btn_Settings_Click" Height="20" VerticalAlignment="Bottom" HorizontalAlignment="Right" Width="76" Grid.Row="1" Grid.Column="1"/>
-        <Button x:Name="btn_GetFilesFromLidarr" Content="Get Next Files" HorizontalAlignment="Left" Margin="10,10,0,0" VerticalAlignment="Top" Width="127" Click="btn_GetFilesFromLidarr_Click" Grid.ColumnSpan="2"/>
-        <ListView x:Name="list_CurrentFiles" Margin="10,35,85,0" Height="180" VerticalAlignment="Top" Grid.ColumnSpan="2">
+        <Button x:Name="btn_GetFilesFromLidarr" Content="Get Next Files" HorizontalAlignment="Left" Margin="141,34,0,0" VerticalAlignment="Top" Width="127" Click="btn_GetFilesFromLidarr_Click"/>
+        <ListView x:Name="list_CurrentFiles" Margin="10,59,131,0" Height="180" VerticalAlignment="Top">
             <!-- Row colouring by Match enum (folders use greens, single-file matches use blues) -->
             <ListView.ItemContainerStyle>
                 <Style TargetType="ListViewItem">
@@ -44,33 +44,107 @@
             <ListView.View>
                 <GridView>
                     <GridViewColumn Header="Title" DisplayMemberBinding="{Binding Title}" Width="200"/>
-                    <GridViewColumn Header="Output Path" DisplayMemberBinding="{Binding OutputPath}" Width="300"/>
+                    <GridViewColumn Header="File Path" DisplayMemberBinding="{Binding OutputPath}" Width="300"/>
                     <GridViewColumn Header="ID" DisplayMemberBinding="{Binding Id}" Width="80"/>
                     <GridViewColumn Header="Download ID" DisplayMemberBinding="{Binding DownloadId}" Width="200"/>
+                    <GridViewColumn Header="Matched Artist" DisplayMemberBinding="{Binding MatchedArtist}" Width="200"/>
                 </GridView>
             </ListView.View>
         </ListView>
-        <Button x:Name="btn_AI_SearchMatch" Content="AI Search / Match" HorizontalAlignment="Left" Margin="10,432,0,0" Width="127" Click="btn_AI_SearchMatch_Click" Height="20" VerticalAlignment="Top"/>
-        <ListView x:Name="list_Proposed_Actions" d:ItemsSource="{d:SampleData ItemCount=5}" Margin="10,457,85,35">
-            <ListView.View>
-                <GridView>
-                    <GridViewColumn/>
-                </GridView>
-            </ListView.View>
-        </ListView>
-        <ListView x:Name="list_Files_in_Release" Margin="10,220,85,0" Grid.RowSpan="2" VerticalAlignment="Top" Height="207" Grid.ColumnSpan="2">
-            <ListView.View>
-                <GridView>
-                    <GridViewColumn Header="Path" DisplayMemberBinding="{Binding Path}" Width="300"/>
-                    <GridViewColumn Header="Name" DisplayMemberBinding="{Binding Name}" Width="200"/>
-                    <GridViewColumn Header="ID" DisplayMemberBinding="{Binding Id}" Width="80"/>
-                </GridView>
-            </ListView.View>
-        </ListView>
-        <Button x:Name="btn_GetArtists" Content="Get Artists" Margin="0,10,85,0" Click="btn_GetArtists_Click" HorizontalAlignment="Right" VerticalAlignment="Top" Width="68" Grid.Column="1"/>
-        <Label x:Name="lbl_artistCount" Content="Get Artists..." Margin="0,7,12,0" HorizontalAlignment="Right" VerticalAlignment="Top" Grid.Column="1"/>
-        <Button x:Name="btn_autoReleaseMatchToArtist" Content="Auto Match" Margin="0,69,10,0" VerticalAlignment="Top" Click="btn_autoReleaseMatchToArtist_Click" HorizontalAlignment="Right" Grid.Column="1"/>
-        <Button x:Name="btn_manualReleaseMatchToArtist" Content="Match" Margin="0,44,10,0" VerticalAlignment="Top" Click="btn_manualReleaseMatchToArtist_Click" HorizontalAlignment="Right" Width="66" Grid.Column="1"/>
 
+        <!-- Added Check Ollama button next to Get Artists -->
+        <Button x:Name="btn_CheckOllama" Content="Check Ollama" Margin="0,34,243,0" Click="btn_CheckOllama_Click" HorizontalAlignment="Right" VerticalAlignment="Top" Width="106"/>
+
+        <Button x:Name="btn_AI_SearchMatch" Content="AI Search / Match" Margin="0,261,10,0" Click="btn_AI_SearchMatch_Click" Height="20" VerticalAlignment="Top" HorizontalAlignment="Right" Width="109"/>
+        <ListView x:Name="list_Files_in_Release" Margin="10,261,0,0" VerticalAlignment="Top" Height="222" HorizontalAlignment="Left" Width="456">
+            <ListView.ItemContainerStyle>
+                <Style TargetType="ListViewItem">
+                    <!-- If file already assigned, disable selection and show light blue -->
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsAssigned}" Value="True">
+                            <Setter Property="IsEnabled" Value="False"/>
+                            <Setter Property="Background" Value="LightBlue"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </ListView.ItemContainerStyle>
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="Name" DisplayMemberBinding="{Binding Name}" Width="200"/>
+                    <GridViewColumn Header="Path" DisplayMemberBinding="{Binding Path}" Width="250"/>
+                </GridView>
+            </ListView.View>
+        </ListView>
+
+        <ListView x:Name="list_Artist_Releases" Margin="471,261,126,0" VerticalAlignment="Top" Height="222" SelectionMode="Single">
+            <ListView.ItemContainerStyle>
+                <Style TargetType="ListViewItem">
+                    <Setter Property="Background" Value="Transparent"/>
+                    <Style.Triggers>
+                        <!-- Pre-matched (hasFile) -> grey so user knows it'll overwrite -->
+                        <DataTrigger Binding="{Binding HasFile}" Value="True">
+                            <Setter Property="Background" Value="LightGray"/>
+                        </DataTrigger>
+                        <!-- Assigned in UI -> light blue and disable -->
+                        <DataTrigger Binding="{Binding IsAssigned}" Value="True">
+                            <Setter Property="Background" Value="LightBlue"/>
+                            <Setter Property="IsEnabled" Value="False"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </ListView.ItemContainerStyle>
+
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="Release" DisplayMemberBinding="{Binding Release}" Width="250"/>
+                    <GridViewColumn Header="Track" DisplayMemberBinding="{Binding Track}" Width="230"/>
+                    <GridViewColumn Header="Exists?" Width="50">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <CheckBox IsChecked="{Binding HasFile}" IsEnabled="False" HorizontalAlignment="Center"/>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                </GridView>
+            </ListView.View>
+        </ListView>
+
+        <Button x:Name="btn_GetArtists" Content="Get Artists" Margin="0,34,131,0" Click="btn_GetArtists_Click" HorizontalAlignment="Right" VerticalAlignment="Top" Width="106"/>
+        <Label x:Name="lbl_artistCount" Content="Get Artists..." Margin="0,31,32,0" HorizontalAlignment="Right" VerticalAlignment="Top"/>
+        <Button x:Name="btn_autoReleaseMatchToArtist" Content="Auto Match" Margin="0,93,10,0" VerticalAlignment="Top" Click="btn_autoReleaseMatchToArtist_Click" HorizontalAlignment="Right" Width="116"/>
+        <Button x:Name="btn_manualReleaseMatchToArtist" Content="Match" Margin="0,68,10,0" VerticalAlignment="Top" Click="btn_manualReleaseMatchToArtist_Click" HorizontalAlignment="Right" Width="116"/>
+        <Label x:Name="label" Content="Unimported Release Files:" HorizontalAlignment="Left" Margin="10,239,0,0" VerticalAlignment="Top" Width="167"/>
+        <Label x:Name="label_Copy" Content="Artist Release Files:" HorizontalAlignment="Left" Margin="471,239,0,0" VerticalAlignment="Top" Width="167"/>
+        <Label x:Name="label_Copy1" Content="Unimported Releases:" HorizontalAlignment="Left" Margin="10,31,0,0" VerticalAlignment="Top" Width="167"/>
+        <Label x:Name="label_Copy2" Content="Actions to Take" HorizontalAlignment="Left" Margin="10,488,0,0" VerticalAlignment="Top" Width="167"/>
+
+
+        <Button x:Name="btn_MarkMatch" Content="Mark Match" Click="btn_MarkMatch_Click" Margin="0,286,10,0" HorizontalAlignment="Right" Width="109" Height="20" VerticalAlignment="Top"/>
+
+
+        <Label Content="Sort Mode" Margin="0,321,10,0" HorizontalAlignment="Right" Width="109" Height="23" VerticalAlignment="Top"/>
+        <ComboBox x:Name="cmb_SortMode" SelectionChanged="cmb_SortMode_SelectionChanged" Margin="0,344,10,0" Height="23" VerticalAlignment="Top" HorizontalAlignment="Right" Width="109">
+            <ComboBoxItem Content="by Release" />
+            <ComboBoxItem Content="by Track Num" />
+            <ComboBoxItem Content="by Track Name" />
+            <ComboBoxItem Content="by Best" IsSelected="True" />
+        </ComboBox>
+
+
+        <Button x:Name="btn_UnselectMatch" Content="Unselect" Click="btn_UnselectMatch_Click" Margin="0,515,10,0" HorizontalAlignment="Right" Width="109" Height="21" VerticalAlignment="Top"/>
+
+
+        <!-- Proposed actions list: now bound to runtime collection -->
+        <ListView x:Name="list_Proposed_Actions" Margin="10,514,131,35">
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="FileName" DisplayMemberBinding="{Binding OriginalFileName}" Width="200"/>
+                    <GridViewColumn Header="OriginalRelease" DisplayMemberBinding="{Binding OriginalRelease}" Width="200"/>
+                    <GridViewColumn Header="MatchedArtist" DisplayMemberBinding="{Binding MatchedArtist}" Width="150"/>
+                    <GridViewColumn Header="MatchedTrack" DisplayMemberBinding="{Binding MatchedTrack}" Width="200"/>
+                    <GridViewColumn Header="MatchedRelease" DisplayMemberBinding="{Binding MatchedRelease}" Width="250"/>
+                </GridView>
+            </ListView.View>
+        </ListView>
     </Grid>
 </Window>
