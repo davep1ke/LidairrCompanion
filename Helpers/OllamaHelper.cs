@@ -1,12 +1,8 @@
+using LidairrCompanion.Models;
 using System.IO;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
-using System.Threading.Tasks;
-using System.Windows;
-using LidairrCompanion.Models;
-using System.Collections.Generic;
-using System.Linq;
 
 namespace LidairrCompanion.Helpers
 {

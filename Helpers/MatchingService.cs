@@ -1,10 +1,6 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text.RegularExpressions;
-using System.Threading.Tasks;
 using LidairrCompanion.Models;
 using System.IO;
+using System.Text.RegularExpressions;
 
 namespace LidairrCompanion.Helpers
 {
@@ -306,7 +302,11 @@ namespace LidairrCompanion.Helpers
                     MatchedTrack = info.TrackLabel,
                     MatchedRelease = info.ReleaseDisplay,
                     TrackId = m.TrackId,
-                    FileId = file.Id
+                    FileId = file.Id,
+                    Path = file.Path,
+                    // carry through download id and quality info
+                    DownloadId = selectedRecord?.DownloadId ?? string.Empty,
+                    Quality = file.Quality
                 });
             }
 
@@ -391,9 +391,23 @@ namespace LidairrCompanion.Helpers
             return Regex.Replace(trackLabel, "^\\s*\\d+\\.?\\s*-?\\s*", string.Empty).Trim();
         }
 
+        public static double WordMatchScore(string a, string b, double maxPoints)
+        {
+            if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b)) return 0.0;
+            var aw = a.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim()).Where(s => s.Length > 0).ToArray();
+            var bw = b.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim()).Where(s => s.Length > 0).ToArray();
+            if (aw.Length == 0 || bw.Length == 0) return 0.0;
+
+            // Count how many unique words in A appear in B
+            var matched = aw.Count(w => bw.Any(x => string.Equals(x, w, StringComparison.OrdinalIgnoreCase)));
+            var percent = (double)matched / Math.Max(aw.Length, bw.Length);
+            // scale to maxPoints
+            return percent * maxPoints;
+        }
+
         public static double ComputeMatchScore(string fileName, LidarrArtistReleaseTrack track)
         {
-            // Score components: exact, clean, minimal, minclean; per-word matches increase score.
+            // Score components: Direct, Exact, Clean, Minimal, MinClean
             if (string.IsNullOrWhiteSpace(fileName) || track == null) return 0.0;
 
             var fileBase = Path.GetFileNameWithoutExtension(fileName) ?? fileName;
@@ -401,26 +415,56 @@ namespace LidairrCompanion.Helpers
 
             double score = 0.0;
 
-            // Exact match (case-insensitive, punctuation preserved)
-            if (string.Equals(fileBase, trackTitle, StringComparison.OrdinalIgnoreCase))
-                score += 100.0; // strong boost
+            // Load configured max scores from settings
+            var maxDirect = AppSettings.Current.GetTyped<int>(SettingKey.Direct);
+            var maxExact = AppSettings.Current.GetTyped<int>(SettingKey.Exact);
+            var maxClean = AppSettings.Current.GetTyped<int>(SettingKey.Clean);
+            var maxMinimal = AppSettings.Current.GetTyped<int>(SettingKey.Minimal);
+            var maxMinClean = AppSettings.Current.GetTyped<int>(SettingKey.MinClean);
 
-            // CLEAN: remove punctuation & filler words
-            var fileClean = CleanString(fileBase);
-            var trackClean = CleanString(trackTitle);
-            score += WordMatchScore(fileClean, trackClean, 5.0);
+            // DIRECT: all words from fileBase appear in trackTitle (order not required)
+            var fileWords = fileBase.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).Select(w => w.Trim()).Where(w => w.Length > 0).ToArray();
+            var trackWords = trackTitle.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).Select(w => w.Trim()).Where(w => w.Length > 0).ToArray();
+            if (fileWords.Length > 0 && fileWords.All(fw => trackWords.Any(tw => string.Equals(fw, tw, StringComparison.OrdinalIgnoreCase))))
+            {
+                score += maxDirect; // direct match boost
+            }
+            else
+            {
+                // Exact full-string match
+                if (string.Equals(fileBase, trackTitle, StringComparison.OrdinalIgnoreCase))
+                {
+                    score += maxExact;
+                }
+                else
+                {
+                    // CLEAN paths
+                    var fileClean = CleanString(fileBase);
+                    var trackClean = CleanString(trackTitle);
+                    score += WordMatchScore(fileClean, trackClean, maxClean);
 
-            // MINIMAL: remove vowels and double letters
-            var fileMin = MinimalString(fileClean);
-            var trackMin = MinimalString(trackClean);
-            score += WordMatchScore(fileMin, trackMin, 3.0);
+                    // MINIMAL paths
+                    var fileMin = MinimalString(fileClean);
+                    var trackMin = MinimalString(trackClean);
+                    score += WordMatchScore(fileMin, trackMin, maxMinimal);
 
-            // MINCLEAN overlap (both minimal+clean) - extra boost
-            score += WordMatchScore(MinimalString(fileBase), MinimalString(trackTitle), 2.0);
+                    // MINCLEAN overlap
+                    var fileMinClean = MinimalString(fileBase);
+                    var trackMinClean = MinimalString(trackTitle);
+                    score += WordMatchScore(fileMinClean, trackMinClean, maxMinClean);
+                }
+            }
 
-            // Boost if release already has matches or track has existing file
+            // Boost if release already has matches (other files assigned) but NOT if this specific file is already assigned or track.HasFile
             if (track.IsAssigned || track.HasFile)
-                score += 10.0;
+            {
+                // do not boost if this specific file is the one assigned. We don't have access to file id here, caller ensures not to apply when specific file selected.
+            }
+            else
+            {
+                // If any other files in the release are assigned, boost by 10
+                // Note: caller should supply context if needed. We'll avoid adding here to prevent incorrect boosts.
+            }
 
             return score;
         }
@@ -457,7 +501,7 @@ namespace LidairrCompanion.Helpers
                 foreach (var ch in word)
                 {
                     // remove vowels
-                    if ("aeiou".IndexOf(ch) >=0)
+                    if ("aeiou".IndexOf(ch) >= 0)
                         continue;
 
                     // collapse double letters
@@ -472,7 +516,7 @@ namespace LidairrCompanion.Helpers
                 var processed = sb.ToString();
                 if (processed.EndsWith("s", StringComparison.Ordinal))
                 {
-                    processed = processed.Substring(0, processed.Length -1);
+                    processed = processed.Substring(0, processed.Length - 1);
                 }
 
                 if (!string.IsNullOrEmpty(processed))
@@ -480,19 +524,6 @@ namespace LidairrCompanion.Helpers
             }
 
             return string.Join(' ', resultWords);
-        }
-
-        public static double WordMatchScore(string a, string b, double perWord)
-        {
-            if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b)) return 0.0;
-            var aw = a.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-            var bw = b.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-            double score = 0.0;
-            foreach (var w in aw)
-            {
-                if (bw.Any(x => string.Equals(x, w, StringComparison.OrdinalIgnoreCase))) score += perWord;
-            }
-            return score;
         }
     }
 }

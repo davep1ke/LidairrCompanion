@@ -1,29 +1,92 @@
-using System;
-using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using System.Linq;
+using System.IO;
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.IO;
 
 namespace LidairrCompanion.Models
 {
-    public enum SettingKey
+    // Attribute to attach metadata to settings enum members
+    [AttributeUsage(AttributeTargets.Field)]
+    public class SettingAttribute : Attribute
     {
-        LidarrURL,
-        LidarrAPIKey,
-        OllamaURL,
-        LidarrImportPath,
-        LidarrImportPathRemote,
-        OllamaModel
+        public Type Type { get; }
+        public string Description { get; }
+        public object DefaultValue { get; }
+
+        public SettingAttribute(Type type, string description)
+        {
+            Type = type;
+            Description = description;
+            if (type == typeof(bool)) DefaultValue = false;
+            else if (type == typeof(int)) DefaultValue = 0;
+            else DefaultValue = string.Empty;
+        }
+
+        public SettingAttribute(Type type, string description, object defaultValue)
+        {
+            Type = type;
+            Description = description;
+            DefaultValue = defaultValue ?? (type == typeof(bool) ? (object)false : type == typeof(int) ? (object)0 : string.Empty);
+        }
     }
 
+    public enum SettingKey
+    {
+        [Setting(typeof(string), "Base URL for your Lidarr instance")]
+        LidarrURL,
+        [Setting(typeof(string), "API key for Lidarr")]
+        LidarrAPIKey,
+        [Setting(typeof(int), "HTTP timeout in seconds for Lidarr calls", 30)]
+        LidarrHttpTimeout,
+        [Setting(typeof(string), "Import path used by Lidarr [Server]")]
+        LidarrImportPath,
+        [Setting(typeof(string), "Local mapping for Lidarr import path [Local]")]
+        LidarrImportPathLocal,
+
+        //Ollama
+        [Setting(typeof(string), "URL for Ollama server")]
+        OllamaURL,
+        [Setting(typeof(string), "Ollama model to use")]
+        OllamaModel,
+
+        //Backups and Moving
+        [Setting(typeof(bool), "Create a backup of files before importing")]
+        BackupFilesBeforeImport,
+        [Setting(typeof(string), "Root folder where backups will be stored [Local]")]
+        BackupRootFolder,
+        //[Setting(typeof(string), "Path pattern or folder to exclude from importing")]
+        //DontImportFilesPath,
+        [Setting(typeof(string), "Path to move files that are marked 'Not Selected' before import [Local]")]
+        NotSelectedPath,
+
+        //Copy files
+        [Setting(typeof(bool), "Also copy imported files to a separate location")]
+        CopyImportedFiles,
+        [Setting(typeof(string), "Destination path for copied imported files [Local]")]
+        CopyImportedFilesPath,
+
+        // Match scoring configuration (max points)
+        [Setting(typeof(int), "Direct match max score (words match irrespective of order)", 15)]
+        Direct,
+        [Setting(typeof(int), "Exact match max score (full string match)", 10)]
+        Exact,
+        [Setting(typeof(int), "Clean match max score (cleaned words percentage)", 8)]
+        Clean,
+        [Setting(typeof(int), "Minimal match max score (minimalized words percentage)", 6)]
+        Minimal,
+        [Setting(typeof(int), "MinClean match max score (minimal+clean overlap percentage)", 4)]
+        MinClean,
+        [Setting(typeof(int), "Release-level boost when other files are assigned", 10)]
+        ReleaseBoost,
+    }
 
 
     public class SettingItem
     {
         public string Name { get; set; }
         public string Value { get; set; }
+        public string Description { get; set; }
     }
 
     public class AppSettings
@@ -32,26 +95,93 @@ namespace LidairrCompanion.Models
 
         public static AppSettings Current { get; set; } = new AppSettings();
 
+        // Values are stored as boxed objects so booleans/ints/strings are preserved in JSON
         [JsonInclude]
-        public Dictionary<string, string> Settings { get; private set; }
+        public Dictionary<string, object> Settings { get; private set; }
 
         public AppSettings()
         {
             Settings = Enum.GetNames(typeof(SettingKey))
-                .ToDictionary(key => key, key => string.Empty);
+                .ToDictionary(key => key, key => (object)string.Empty);
         }
 
+        private static SettingAttribute? GetAttributeForKey(string name)
+        {
+            if (!Enum.TryParse<SettingKey>(name, out var k)) return null;
+            var mem = typeof(SettingKey).GetMember(k.ToString());
+            if (mem != null && mem.Length > 0)
+            {
+                return mem[0].GetCustomAttribute<SettingAttribute>();
+            }
+            return null;
+        }
 
+        private static Type GetTypeForKey(string name)
+        {
+            var attr = GetAttributeForKey(name);
+            if (attr != null) return attr.Type;
+            return typeof(string);
+        }
 
+        private static string GetDescriptionForKey(string name)
+        {
+            var attr = GetAttributeForKey(name);
+            if (attr != null) return attr.Description;
+            return string.Empty;
+        }
 
+        private static object DefaultValueForType(Type t)
+        {
+            if (t == typeof(bool)) return false;
+            if (t == typeof(int)) return 0;
+            return string.Empty;
+        }
 
+        private static object ParseStringToType(string str, Type t)
+        {
+            if (t == typeof(bool))
+            {
+                if (bool.TryParse(str, out var b)) return b;
+                // Accept common truthy values
+                if (!string.IsNullOrEmpty(str))
+                {
+                    var lowered = str.Trim().ToLowerInvariant();
+                    if (lowered == "1" || lowered == "yes" || lowered == "y" || lowered == "true") return true;
+                    if (lowered == "0" || lowered == "no" || lowered == "n" || lowered == "false") return false;
+                }
+                return false;
+            }
+            if (t == typeof(int))
+            {
+                if (int.TryParse(str, out var i)) return i;
+                return 0;
+            }
+            return str ?? string.Empty;
+        }
+
+        private static string ObjectToString(object o)
+        {
+            if (o == null) return string.Empty;
+            if (o is JsonElement je)
+            {
+                switch (je.ValueKind)
+                {
+                    case JsonValueKind.String: return je.GetString() ?? string.Empty;
+                    case JsonValueKind.Number: return je.GetRawText();
+                    case JsonValueKind.True: return "True";
+                    case JsonValueKind.False: return "False";
+                    default: return je.GetRawText();
+                }
+            }
+            return o.ToString();
+        }
 
         public ObservableCollection<SettingItem> ToCollection()
         {
             var collection = new ObservableCollection<SettingItem>();
             foreach (var kvp in Settings)
             {
-                collection.Add(new SettingItem { Name = kvp.Key, Value = kvp.Value });
+                collection.Add(new SettingItem { Name = kvp.Key, Value = ObjectToString(kvp.Value), Description = GetDescriptionForKey(kvp.Key) });
             }
             return collection;
         }
@@ -61,16 +191,51 @@ namespace LidairrCompanion.Models
             foreach (var item in items)
             {
                 if (Settings.ContainsKey(item.Name))
-                    Settings[item.Name] = item.Value;
+                {
+                    var targetType = GetTypeForKey(item.Name);
+                    Settings[item.Name] = ParseStringToType(item.Value, targetType);
+                }
             }
         }
 
+        // Return string representation (keeps compatibility with existing callers)
         public string Get(SettingKey key)
         {
-            return Settings.TryGetValue(key.ToString(), out var value) ? value : string.Empty;
+            var name = key.ToString();
+            if (!Settings.TryGetValue(name, out var value)) return string.Empty;
+            return ObjectToString(value);
         }
 
-        // Static helper for shorter calls
+        // Return raw typed value
+        public T GetTyped<T>(SettingKey key)
+        {
+            var name = key.ToString();
+            if (!Settings.TryGetValue(name, out var value)) return default!;
+            if (value is JsonElement je)
+            {
+                try
+                {
+                    if (typeof(T) == typeof(string)) return (T)(object)(je.GetString() ?? string.Empty);
+                    if (typeof(T) == typeof(bool)) return (T)(object)je.GetBoolean();
+                    if (typeof(T) == typeof(int)) return (T)(object)je.GetInt32();
+                }
+                catch
+                {
+                    return default!;
+                }
+            }
+            if (value is T tVal) return tVal;
+            try
+            {
+                return (T)Convert.ChangeType(value, typeof(T));
+            }
+            catch
+            {
+                return default!;
+            }
+        }
+
+        // Static helper for shorter calls (keeps compatibility)
         public static string GetValue(SettingKey key) => Current.Get(key);
 
         public static void Load()
@@ -88,13 +253,71 @@ namespace LidairrCompanion.Models
             {
                 Current = new AppSettings();
             }
+
+            // Convert any JsonElement values to appropriate CLR types based on the enum attributes
+            var keys = Current.Settings.Keys.ToList();
+            foreach (var k in keys)
+            {
+                var t = GetTypeForKey(k);
+                var val = Current.Settings[k];
+                if (val is JsonElement je)
+                {
+                    object converted;
+                    try
+                    {
+                        if (t == typeof(bool) && (je.ValueKind == JsonValueKind.True || je.ValueKind == JsonValueKind.False))
+                            converted = je.GetBoolean();
+                        else if (t == typeof(int) && je.ValueKind == JsonValueKind.Number)
+                            converted = je.GetInt32();
+                        else if (je.ValueKind == JsonValueKind.String)
+                            converted = je.GetString() ?? string.Empty;
+                        else if (je.ValueKind == JsonValueKind.Number)
+                        {
+                            // fallback - try int then raw
+                            if (je.TryGetInt32(out var i)) converted = i;
+                            else converted = je.GetRawText();
+                        }
+                        else converted = je.GetRawText();
+                    }
+                    catch
+                    {
+                        converted = DefaultValueForType(t);
+                    }
+
+                    Current.Settings[k] = converted;
+                }
+                else if (val == null)
+                {
+                    Current.Settings[k] = DefaultValueForType(t);
+                }
+            }
+
             Current.EnsureAllKeys();
         }
 
-
-
         public void EnsureAllKeys()
         {
+            // Ensure all known enum keys are present and initialized with typed defaults (using attribute default when provided)
+            foreach (var key in Enum.GetValues(typeof(SettingKey)).Cast<SettingKey>())
+            {
+                var keyName = key.ToString();
+                if (!Settings.ContainsKey(keyName))
+                {
+                    var attr = GetAttributeForKey(keyName);
+                    Settings[keyName] = attr != null ? attr.DefaultValue : DefaultValueForType(typeof(string));
+                }
+                else
+                {
+                    // If present but null, set default
+                    if (Settings[keyName] == null)
+                    {
+                        var attr = GetAttributeForKey(keyName);
+                        Settings[keyName] = attr != null ? attr.DefaultValue : DefaultValueForType(typeof(string));
+                    }
+                }
+            }
+
+            // Also ensure any keys present (but without attributes) at least have string defaults
             foreach (var key in Enum.GetNames(typeof(SettingKey)))
             {
                 if (!Settings.ContainsKey(key))

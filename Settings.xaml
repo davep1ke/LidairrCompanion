@@ -5,26 +5,110 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:LidairrCompanion"
         mc:Ignorable="d"
-        Title="Settings" Height="450" Width="800">
+        Title="Settings" Height="450" Width="1032">
 
-    <StackPanel Margin="20">
-        <Grid Margin="20">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="*"/>
-                <RowDefinition Height="Auto"/>
-            </Grid.RowDefinitions>
+    <Grid Margin="10">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="420" />
+        </Grid.ColumnDefinitions>
+
+        <!-- Left: DataGrid (fills and provides scrollbars) -->
+        <Grid Grid.Column="0" Margin="10">
             <DataGrid x:Name="SettingsGrid"
                       AutoGenerateColumns="False"
                       CanUserAddRows="False"
                       CanUserDeleteRows="False"
-                      Grid.Row="0"
-                      Margin="0,0,0,10"
-                      ItemsSource="{Binding SettingsCollection}">
+                      ItemsSource="{Binding SettingsCollection}"
+                      VerticalAlignment="Stretch"
+                      HorizontalAlignment="Stretch"
+                      CellEditEnding="SettingsGrid_CellEditEnding"
+                      IsReadOnly="False"
+                      >
                 <DataGrid.Columns>
                     <DataGridTextColumn Header="Property" Binding="{Binding Name}" IsReadOnly="True"/>
-                    <DataGridTextColumn Header="Value" Binding="{Binding Value}"/>
+                    <DataGridTextColumn Header="Value" Binding="{Binding Value}" />
+                    <DataGridTextColumn Header="Description" Binding="{Binding Description}" IsReadOnly="True" Width="*"/>
                 </DataGrid.Columns>
             </DataGrid>
         </Grid>
-    </StackPanel>
+
+        <!-- Right: Status panel with boxes and connecting arrows -->
+        <Border Grid.Column="1" Margin="6" BorderBrush="LightGray" BorderThickness="1" CornerRadius="4" Padding="8">
+            <Grid>
+                <!-- Two-layer approach: canvas for arrows below, grid of boxes above -->
+                <Canvas x:Name="ArrowsCanvas" IsHitTestVisible="False" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Background="Transparent" Panel.ZIndex="0">
+                    <!-- Lines/arrows connecting centers of grid cells. Stroke will be bound to code-behind properties. -->
+                    <Line x:Name="Line_LidarrURL_Backup" StrokeThickness="3" Stroke="Gray" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+                    <Line x:Name="Line_LidarrURL_Import" StrokeThickness="3" Stroke="Gray" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+                    <Line x:Name="Line_Import_NotSelected" StrokeThickness="3" Stroke="Gray" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+                    <Line x:Name="Line_LidarrURL_Copy" StrokeThickness="3" Stroke="Gray" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+                    <Line x:Name="Line_Import_Copy" StrokeThickness="3" Stroke="Gray" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+                    <Line x:Name="Line_NotSelected_Copy" StrokeThickness="3" Stroke="Gray" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+
+                    <!-- Arrowhead polygons for each line -->
+                    <Polygon x:Name="Head_LidarrURL_Backup" Points="0,00,00,0" Fill="Gray" Panel.ZIndex="1" />
+                    <Polygon x:Name="Head_LidarrURL_Import" Points="0,00,00,0" Fill="Gray" Panel.ZIndex="1" />
+                    <Polygon x:Name="Head_Import_NotSelected" Points="0,00,00,0" Fill="Gray" Panel.ZIndex="1" />
+                    <Polygon x:Name="Head_LidarrURL_Copy" Points="0,00,00,0" Fill="Gray" Panel.ZIndex="1" />
+                    <Polygon x:Name="Head_Import_Copy" Points="0,00,00,0" Fill="Gray" Panel.ZIndex="1" />
+                    <Polygon x:Name="Head_NotSelected_Copy" Points="0,00,00,0" Fill="Gray" Panel.ZIndex="1" />
+                </Canvas>
+
+                <Grid x:Name="BoxesGrid" Panel.ZIndex="2">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Top Left: LidarrURL -->
+                    <Border x:Name="Box_LidarrURL" Grid.Row="0" Grid.Column="0" Margin="12" Padding="10" CornerRadius="6" Background="LightGray" MinHeight="80">
+                        <StackPanel>
+                            <TextBlock Text="Lidarr URL" FontWeight="Bold" HorizontalAlignment="Center"/>
+                            <TextBlock Text="🔗" FontSize="28" HorizontalAlignment="Center" Margin="6" />
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Top Right: BackupRootFolder -->
+                    <Border x:Name="Box_BackupRootFolder" Grid.Row="0" Grid.Column="1" Margin="12" Padding="10" CornerRadius="6" Background="LightGray" MinHeight="80">
+                        <StackPanel>
+                            <TextBlock Text="Backup Root" FontWeight="Bold" HorizontalAlignment="Center"/>
+                            <TextBlock Text="📁" FontSize="28" HorizontalAlignment="Center" Margin="6" />
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Middle Left: LidarrImportPath -->
+                    <Border x:Name="Box_LidarrImportPath" Grid.Row="1" Grid.Column="0" Margin="12" Padding="10" CornerRadius="6" Background="LightGray" MinHeight="80">
+                        <StackPanel>
+                            <TextBlock Text="Lidarr Import Path" FontWeight="Bold" HorizontalAlignment="Center"/>
+                            <TextBlock Text="📂" FontSize="28" HorizontalAlignment="Center" Margin="6" />
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Middle Right: CopyImportedFilesPath -->
+                    <Border x:Name="Box_CopyImportedFilesPath" Grid.Row="1" Grid.Column="1" Margin="12" Padding="10" CornerRadius="6" Background="LightGray" MinHeight="80">
+                        <StackPanel>
+                            <TextBlock Text="Copy Imported Files" FontWeight="Bold" HorizontalAlignment="Center" TextWrapping="Wrap"/>
+                            <!-- Use Segoe MDL2 Assets glyph for copy (U+E8C8) -->
+                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8C8;" FontSize="28" HorizontalAlignment="Center" Margin="6" />
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Bottom Left: NotSelectedPath -->
+                    <Border x:Name="Box_NotSelectedPath" Grid.Row="2" Grid.Column="0" Margin="12" Padding="10" CornerRadius="6" Background="LightGray" MinHeight="80">
+                        <StackPanel>
+                            <TextBlock Text="Not Selected Path" FontWeight="Bold" HorizontalAlignment="Center"/>
+                            <TextBlock Text="🚫" FontSize="28" HorizontalAlignment="Center" Margin="6" />
+                        </StackPanel>
+                    </Border>
+
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
 </Window>

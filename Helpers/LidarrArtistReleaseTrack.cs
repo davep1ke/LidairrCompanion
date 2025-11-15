@@ -11,7 +11,12 @@ namespace LidairrCompanion.Helpers
         private bool _hasFile;
         private int _trackId;
         private int _releaseId;
+        private int _albumId;
+        private string _albumPath = string.Empty;
+        private string _releasePath = string.Empty;
         private bool _isAssigned = false;
+        private bool _isReleaseHasAssigned = false; // new
+        private string _albumType = string.Empty; // new
 
         // Release display text (ReleaseName - Country/Format)
         public string Release
@@ -47,11 +52,46 @@ namespace LidairrCompanion.Helpers
             set => SetProperty(ref _releaseId, value);
         }
 
+        // New: the album id containing this release (cached to avoid extra Lidarr queries)
+        public int AlbumId
+        {
+            get => _albumId;
+            set => SetProperty(ref _albumId, value);
+        }
+
+        // Filesystem path for the album (if provided)
+        public string AlbumPath
+        {
+            get => _albumPath;
+            set => SetProperty(ref _albumPath, value);
+        }
+
+        // Filesystem path for this specific release (if provided)
+        public string ReleasePath
+        {
+            get => _releasePath;
+            set => SetProperty(ref _releasePath, value);
+        }
+
         // New: whether this track has been assigned (matched) in the UI
         public bool IsAssigned
         {
             get => _isAssigned;
             set => SetProperty(ref _isAssigned, value);
+        }
+
+        // New: whether another track in the same release has been assigned/matched (used to highlight sibling tracks)
+        public bool IsReleaseHasAssigned
+        {
+            get => _isReleaseHasAssigned;
+            set => SetProperty(ref _isReleaseHasAssigned, value);
+        }
+
+        // New: album type copied from album metadata (e.g., "album", "single").
+        public string AlbumType
+        {
+            get => _albumType;
+            set => SetProperty(ref _albumType, value);
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;

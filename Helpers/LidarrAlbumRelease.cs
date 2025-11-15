@@ -8,6 +8,8 @@ namespace LidairrCompanion.Helpers
         public string Country { get; set; } = string.Empty;
         public string Label { get; set; } = string.Empty;
         public string PublishDate { get; set; } = string.Empty;
+        // Filesystem path for this release (if provided by the API)
+        public string Path { get; set; } = string.Empty;
 
         public string GetDisplayText()
         {

@@ -1,39 +1,60 @@
-using System;
-using System.Collections.Generic;
+using LidairrCompanion.Models;
 using System.Net.Http;
 using System.Text.Json;
-using System.Threading;
-using System.Threading.Tasks;
-using LidairrCompanion.Models;
 
 namespace LidairrCompanion.Helpers
 {
     public class LidarrHelper
     {
         private readonly string _baseUrl;
-        private readonly string _apiKey;
+
         private readonly HttpClient _client;
 
         public LidarrHelper()
         {
-            _baseUrl = AppSettings.GetValue(SettingKey.LidarrURL)?.TrimEnd('/');
-            _apiKey = AppSettings.GetValue(SettingKey.LidarrAPIKey);
 
             _client = new HttpClient();
-            _client.Timeout = TimeSpan.FromSeconds(20);
+            // Read timeout from settings (default30s)
+            int timeoutSeconds = AppSettings.Current.GetTyped<int>(SettingKey.LidarrHttpTimeout);
+            if (timeoutSeconds <= 0) timeoutSeconds = 30;
+            _client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
+        }
+
+        // Centralised request builder + sender. Returns the response JSON as string.
+        private async Task<string> CallLidarrAsync(HttpMethod method, string relativePath, object? payload = null)
+        {
+            var baseUrl = AppSettings.GetValue(SettingKey.LidarrURL)?.TrimEnd('/');
+            var apiKey = AppSettings.GetValue(SettingKey.LidarrAPIKey);
+            if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(apiKey))
+                throw new InvalidOperationException("Lidarr URL or API Key is not set.");
+
+            var url = baseUrl + "/" + relativePath.TrimStart('/');
+
+            // Ensure API key present as query parameter (caller-side removed apikey usage)
+            var sep = url.Contains('?') ? '&' : '?';
+            url = url + sep + "apikey=" + Uri.EscapeDataString(apiKey);
+
+            using var request = new HttpRequestMessage(method, url);
+            // keep header as well for compatibility
+            request.Headers.Add("X-Api-Key", apiKey);
+
+            if (payload != null)
+            {
+                var jsonPayload = JsonSerializer.Serialize(payload);
+                request.Content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
+            }
+
+            // Standardise to read full content before returning
+            using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseContentRead).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            var respJson = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            return respJson;
         }
 
         public async Task<IList<LidarrQueueRecord>> GetBlockedCompletedQueueAsync(int page = 1, int pageSize = 50)
         {
-            if (string.IsNullOrWhiteSpace(_baseUrl) || string.IsNullOrWhiteSpace(_apiKey))
-                throw new InvalidOperationException("Lidarr URL or API Key is not set.");
-
-            var url = $"{_baseUrl}/api/v1/queue?page={page}&pageSize={pageSize}" +
-                      $"&includeUnknownArtistItems=true&includeArtist=true&includeAlbum=true&apikey={_apiKey}";
-
-            var response = await _client.GetAsync(url);
-            response.EnsureSuccessStatusCode();
-            var json = await response.Content.ReadAsStringAsync();
+            var relative = $"api/v1/queue?page={page}&pageSize={pageSize}&includeUnknownArtistItems=true&includeArtist=true&includeAlbum=true";
+            var json = await CallLidarrAsync(HttpMethod.Get, relative).ConfigureAwait(false);
 
             var results = new List<LidarrQueueRecord>();
 
@@ -63,14 +84,8 @@ namespace LidairrCompanion.Helpers
 
         public async Task<IList<LidarrManualImportFile>> GetFilesInReleaseAsync(string folderPath)
         {
-            if (string.IsNullOrWhiteSpace(_baseUrl) || string.IsNullOrWhiteSpace(_apiKey))
-                throw new InvalidOperationException("Lidarr URL or API Key is not set.");
-
-            var url = $"{_baseUrl}/api/v1/manualimport?folder={Uri.EscapeDataString(folderPath)}&apikey={_apiKey}";
-
-            var response = await _client.GetAsync(url);
-            response.EnsureSuccessStatusCode();
-            var json = await response.Content.ReadAsStringAsync();
+            var relative = $"api/v1/manualimport?folder={Uri.EscapeDataString(folderPath)}";
+            var json = await CallLidarrAsync(HttpMethod.Get, relative).ConfigureAwait(false);
 
             var results = new List<LidarrManualImportFile>();
             using var doc = JsonDocument.Parse(json);
@@ -78,50 +93,48 @@ namespace LidairrCompanion.Helpers
             {
                 foreach (var item in doc.RootElement.EnumerateArray())
                 {
-                    results.Add(new LidarrManualImportFile
+                    var file = new LidarrManualImportFile
                     {
                         Path = item.GetProperty("path").GetString(),
                         Name = item.GetProperty("name").GetString(),
                         Id = item.GetProperty("id").GetInt32()
-                    });
+                    };
+
+                    // parse quality/revision if present
+                    if (item.TryGetProperty("quality", out var q) && q.ValueKind == JsonValueKind.Object)
+                    {
+                        var mq = new LidarrManualFileQuality();
+                        if (q.TryGetProperty("quality", out var qinfo) && qinfo.ValueKind == JsonValueKind.Object)
+                        {
+                            var qi = new LidarrQualityInfo();
+                            if (qinfo.TryGetProperty("id", out var qid) && qid.ValueKind == JsonValueKind.Number) qi.id = qid.GetInt32();
+                            if (qinfo.TryGetProperty("name", out var qname) && qname.ValueKind == JsonValueKind.String) qi.name = qname.GetString();
+                            mq.quality = qi;
+                        }
+                        if (q.TryGetProperty("revision", out var rev) && rev.ValueKind == JsonValueKind.Object)
+                        {
+                            var r = new LidarrRevision();
+                            if (rev.TryGetProperty("version", out var v) && v.ValueKind == JsonValueKind.Number) r.version = v.GetInt32();
+                            if (rev.TryGetProperty("real", out var real) && real.ValueKind == JsonValueKind.Number) r.real = real.GetInt32();
+                            if (rev.TryGetProperty("isRepack", out var ir) && ir.ValueKind == JsonValueKind.True) r.isRepack = true;
+                            mq.revision = r;
+                        }
+                        file.Quality = mq;
+                    }
+
+                    results.Add(file);
                 }
             }
             return results;
         }
 
-        // Use X-Api-Key header and stream parsing; optional CancellationToken
-        public async Task<IList<LidarrArtist>> GetAllArtistsAsync(CancellationToken cancellationToken = default)
+        public async Task<IList<LidarrArtist>> GetAllArtistsAsync()
         {
-            if (string.IsNullOrWhiteSpace(_baseUrl) || string.IsNullOrWhiteSpace(_apiKey))
-                throw new InvalidOperationException("Lidarr URL or API Key is not set.");
-
-            var uriBuilder = new UriBuilder(_baseUrl);
-            var basePath = uriBuilder.Path?.TrimEnd('/') ?? string.Empty;
-            uriBuilder.Path = $"{basePath}/api/v1/artist".TrimStart('/');
-
-            using var request = new HttpRequestMessage(HttpMethod.Get, uriBuilder.Uri);
-            request.Headers.Add("X-Api-Key", _apiKey);
-
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            linkedCts.CancelAfter(_client.Timeout);
-
-            HttpResponseMessage response;
-            try
-            {
-                response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, linkedCts.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
-            {
-                throw new TimeoutException("Request to Lidarr timed out.", ex);
-            }
-
-            response.EnsureSuccessStatusCode();
+            var json = await CallLidarrAsync(HttpMethod.Get, "api/v1/artist").ConfigureAwait(false);
 
             var results = new List<LidarrArtist>();
 
-            await using var stream = await response.Content.ReadAsStreamAsync(linkedCts.Token).ConfigureAwait(false);
-            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: linkedCts.Token).ConfigureAwait(false);
-
+            using var doc = JsonDocument.Parse(json);
             if (doc.RootElement.ValueKind == JsonValueKind.Array)
             {
                 foreach (var item in doc.RootElement.EnumerateArray())
@@ -129,7 +142,8 @@ namespace LidairrCompanion.Helpers
                     results.Add(new LidarrArtist
                     {
                         ArtistName = item.GetProperty("artistName").GetString(),
-                        Id = item.GetProperty("id").GetInt32()
+                        Id = item.GetProperty("id").GetInt32(),
+                        Path = item.TryGetProperty("path", out var ap) && ap.ValueKind == JsonValueKind.String ? ap.GetString() ?? string.Empty : string.Empty
                     });
                 }
             }
@@ -138,40 +152,13 @@ namespace LidairrCompanion.Helpers
         }
 
         // Get albums for an artist (includeAllArtistAlbums=true)
-        public async Task<IList<LidarrAlbum>> GetAlbumsByArtistAsync(int artistId, CancellationToken cancellationToken = default)
+        public async Task<IList<LidarrAlbum>> GetAlbumsByArtistAsync(int artistId)
         {
-            if (string.IsNullOrWhiteSpace(_baseUrl) || string.IsNullOrWhiteSpace(_apiKey))
-                throw new InvalidOperationException("Lidarr URL or API Key is not set.");
-
-            var uriBuilder = new UriBuilder(_baseUrl);
-            var basePath = uriBuilder.Path?.TrimEnd('/') ?? string.Empty;
-            uriBuilder.Path = $"{basePath}/api/v1/album".TrimStart('/');
-
-            var query = $"artistId={artistId}&includeAllArtistAlbums=true";
-            uriBuilder.Query = query;
-
-            using var request = new HttpRequestMessage(HttpMethod.Get, uriBuilder.Uri);
-            request.Headers.Add("X-Api-Key", _apiKey);
-
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            linkedCts.CancelAfter(_client.Timeout);
-
-            HttpResponseMessage response;
-            try
-            {
-                response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, linkedCts.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
-            {
-                throw new TimeoutException("Request to Lidarr timed out.", ex);
-            }
-
-            response.EnsureSuccessStatusCode();
+            var relative = $"api/v1/album?artistId={artistId}&includeAllArtistAlbums=true";
+            var json = await CallLidarrAsync(HttpMethod.Get, relative).ConfigureAwait(false);
 
             var results = new List<LidarrAlbum>();
-            await using var stream = await response.Content.ReadAsStreamAsync(linkedCts.Token).ConfigureAwait(false);
-            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: linkedCts.Token).ConfigureAwait(false);
-
+            using var doc = JsonDocument.Parse(json);
             if (doc.RootElement.ValueKind == JsonValueKind.Array)
             {
                 foreach (var item in doc.RootElement.EnumerateArray())
@@ -179,7 +166,9 @@ namespace LidairrCompanion.Helpers
                     var album = new LidarrAlbum
                     {
                         Title = item.TryGetProperty("title", out var t) ? t.GetString() ?? string.Empty : string.Empty,
-                        Id = item.TryGetProperty("id", out var id) ? id.GetInt32() : 0
+                        Id = item.TryGetProperty("id", out var id) ? id.GetInt32() : 0,
+                        Path = item.TryGetProperty("path", out var ap) && ap.ValueKind == JsonValueKind.String ? ap.GetString() ?? string.Empty : string.Empty,
+                        AlbumType = item.TryGetProperty("albumType", out var at) && at.ValueKind == JsonValueKind.String ? at.GetString() ?? string.Empty : string.Empty
                     };
 
                     if (item.TryGetProperty("images", out var images) && images.ValueKind == JsonValueKind.Array)
@@ -200,7 +189,8 @@ namespace LidairrCompanion.Helpers
                                 Id = r.TryGetProperty("id", out var rid) && rid.ValueKind == JsonValueKind.Number ? rid.GetInt32() : 0,
                                 Title = r.TryGetProperty("title", out var rtitle) ? rtitle.GetString() ?? string.Empty : string.Empty,
                                 Format = r.TryGetProperty("format", out var fmt) ? fmt.GetString() ?? string.Empty : string.Empty,
-                                PublishDate = r.TryGetProperty("publishDate", out var pd) ? pd.GetString() ?? string.Empty : string.Empty
+                                PublishDate = r.TryGetProperty("publishDate", out var pd) ? pd.GetString() ?? string.Empty : string.Empty,
+                                Path = r.TryGetProperty("path", out var rpath) && rpath.ValueKind == JsonValueKind.String ? rpath.GetString() ?? string.Empty : string.Empty
                             };
 
                             if (r.TryGetProperty("country", out var country) && country.ValueKind == JsonValueKind.Array)
@@ -233,47 +223,20 @@ namespace LidairrCompanion.Helpers
 
                     results.Add(album);
                 }
-                results.Sort((a, b) => string.Compare(a.Title , b.Title, StringComparison.OrdinalIgnoreCase));
+                results.Sort((a, b) => string.Compare(a.Title, b.Title, StringComparison.OrdinalIgnoreCase));
             }
 
             return results;
         }
 
         // Get tracks for a given albumReleaseId
-        public async Task<IList<LidarrTrack>> GetTracksByReleaseAsync(int albumReleaseId, CancellationToken cancellationToken = default)
+        public async Task<IList<LidarrTrack>> GetTracksByReleaseAsync(int albumReleaseId)
         {
-            if (string.IsNullOrWhiteSpace(_baseUrl) || string.IsNullOrWhiteSpace(_apiKey))
-                throw new InvalidOperationException("Lidarr URL or API Key is not set.");
-
-            var uriBuilder = new UriBuilder(_baseUrl);
-            var basePath = uriBuilder.Path?.TrimEnd('/') ?? string.Empty;
-            uriBuilder.Path = $"{basePath}/api/v1/track".TrimStart('/');
-
-            var query = $"albumReleaseId={albumReleaseId}";
-            uriBuilder.Query = query;
-
-            using var request = new HttpRequestMessage(HttpMethod.Get, uriBuilder.Uri);
-            request.Headers.Add("X-Api-Key", _apiKey);
-
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            linkedCts.CancelAfter(_client.Timeout);
-
-            HttpResponseMessage response;
-            try
-            {
-                response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, linkedCts.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
-            {
-                throw new TimeoutException("Request to Lidarr timed out.", ex);
-            }
-
-            response.EnsureSuccessStatusCode();
+            var relative = $"api/v1/track?albumReleaseId={albumReleaseId}";
+            var json = await CallLidarrAsync(HttpMethod.Get, relative).ConfigureAwait(false);
 
             var results = new List<LidarrTrack>();
-            await using var stream = await response.Content.ReadAsStreamAsync(linkedCts.Token).ConfigureAwait(false);
-            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: linkedCts.Token).ConfigureAwait(false);
-
+            using var doc = JsonDocument.Parse(json);
             if (doc.RootElement.ValueKind == JsonValueKind.Array)
             {
                 foreach (var t in doc.RootElement.EnumerateArray())
@@ -297,22 +260,10 @@ namespace LidairrCompanion.Helpers
         // Lookup artists by term and return raw JSON objects as strings
         public async Task<IList<string>> LookupArtistsRawAsync(string term)
         {
-            if (string.IsNullOrWhiteSpace(_baseUrl) || string.IsNullOrWhiteSpace(_apiKey))
-                throw new InvalidOperationException("Lidarr URL or API Key is not set.");
-
-            var uriBuilder = new UriBuilder(_baseUrl);
-            var basePath = uriBuilder.Path?.TrimEnd('/') ?? string.Empty;
-            uriBuilder.Path = $"{basePath}/api/v1/artist/lookup".TrimStart('/');
-            uriBuilder.Query = $"term={Uri.EscapeDataString(term)}";
-
-            using var request = new HttpRequestMessage(HttpMethod.Get, uriBuilder.Uri);
-            request.Headers.Add("X-Api-Key", _apiKey);
-
-            using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
+            var relative = $"api/v1/artist/lookup?term={Uri.EscapeDataString(term)}";
+            var json = await CallLidarrAsync(HttpMethod.Get, relative).ConfigureAwait(false);
 
             var results = new List<string>();
-            var json = await response.Content.ReadAsStringAsync();
             using var doc = JsonDocument.Parse(json);
             if (doc.RootElement.ValueKind == JsonValueKind.Array)
             {
@@ -327,6 +278,137 @@ namespace LidairrCompanion.Helpers
             }
 
             return results;
+        }
+
+        // Create a new artist in Lidarr by POSTing the provided raw JSON body (from lookup)
+        public async Task<LidarrArtist?> CreateArtistAsync(string artistJson)
+        {
+            // Keep compatibility: forward to new overload by parsing minimal fields from provided JSON
+            try
+            {
+                using var doc = JsonDocument.Parse(artistJson);
+                var artistName = doc.RootElement.TryGetProperty("artistName", out var an) && an.ValueKind == JsonValueKind.String ? an.GetString() ?? string.Empty : string.Empty;
+                string foreignId;
+                if (doc.RootElement.TryGetProperty("foreignArtistId", out var fid) && fid.ValueKind == JsonValueKind.String)
+                    foreignId = fid.GetString()!;
+                else if (doc.RootElement.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String)
+                    foreignId = id.GetString()!;
+                else if (doc.RootElement.TryGetProperty("id", out var idn) && idn.ValueKind == JsonValueKind.Number)
+                    foreignId = idn.GetInt32().ToString();
+                else
+                    foreignId = System.Guid.NewGuid().ToString();
+
+                var folder = string.IsNullOrWhiteSpace(artistName) ? "Unknown" : artistName;
+
+                // rootFolderPath, qualityProfileId, metadataProfileId and monitored are not available in the raw lookup JSON so use defaults
+                return await CreateArtistAsync(artistName, foreignId, folder, "/mnt/Music/Albums", qualityProfileId: 1, metadataProfileId: 5, monitored: true, searchForMissingAlbums: true).ConfigureAwait(false);
+            }
+            catch
+            {
+                // If parsing fails, attempt to post the raw string directly as before
+                var json = await CallLidarrAsync(HttpMethod.Post, "api/v1/artist", artistJson).ConfigureAwait(false);
+                try
+                {
+                    using var doc2 = JsonDocument.Parse(json);
+                    var artist = new LidarrArtist();
+                    if (doc2.RootElement.TryGetProperty("artistName", out var an2) && an2.ValueKind == JsonValueKind.String)
+                        artist.ArtistName = an2.GetString() ?? string.Empty;
+                    else if (doc2.RootElement.TryGetProperty("title", out var t) && t.ValueKind == JsonValueKind.String)
+                        artist.ArtistName = t.GetString() ?? string.Empty;
+
+                    if (doc2.RootElement.TryGetProperty("id", out var id2) && id2.ValueKind == JsonValueKind.Number)
+                        artist.Id = id2.GetInt32();
+
+                    return artist;
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+        }
+
+        // New overload: construct the JSON payload from parameters and POST to create artist
+        public async Task<LidarrArtist?> CreateArtistAsync(string artistName, string foreignArtistId, string folder, string rootFolderPath, int qualityProfileId = 1, int metadataProfileId = 5, bool monitored = true, bool searchForMissingAlbums = true)
+        {
+            var payload = new
+            {
+                artistName = artistName,
+                foreignArtistId = foreignArtistId,
+                monitored = monitored,
+                addOptions = new { searchForMissingAlbums = searchForMissingAlbums },
+                qualityProfileId = qualityProfileId,
+                metadataProfileId = metadataProfileId,
+                rootFolderPath = rootFolderPath,
+                folder = folder
+            };
+
+            var json = await CallLidarrAsync(HttpMethod.Post, "api/v1/artist", payload).ConfigureAwait(false);
+
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                var artist = new LidarrArtist();
+                if (doc.RootElement.TryGetProperty("artistName", out var an) && an.ValueKind == JsonValueKind.String)
+                    artist.ArtistName = an.GetString() ?? string.Empty;
+                else if (doc.RootElement.TryGetProperty("title", out var t) && t.ValueKind == JsonValueKind.String)
+                    artist.ArtistName = t.GetString() ?? string.Empty;
+
+                if (doc.RootElement.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.Number)
+                    artist.Id = id.GetInt32();
+
+                return artist;
+            }
+            catch
+            {
+                // If parsing fails, return null but do not throw further
+                return null;
+            }
+        }
+
+        internal async Task<bool> ImportFilesAsync(List<ProposedAction> proposedActions)
+        {
+            if (proposedActions == null || proposedActions.Count == 0)
+                return false;
+
+            // Build files array - one entry per proposed action
+            var files = new List<object>();
+            foreach (var pa in proposedActions)
+            {
+                var fileEntry = new
+                {
+                    albumId = pa.AlbumId,
+                    albumReleaseId = pa.AlbumReleaseId,
+                    artistId = pa.ArtistId,
+                    disableReleaseSwitching = false,
+                    downloadId = pa.DownloadId ?? string.Empty,
+                    indexerFlags = 0,
+                    path = pa.Path ?? string.Empty,
+                    trackIds = new[] { pa.TrackId },
+                    quality = pa.Quality
+                };
+
+                files.Add(fileEntry);
+            }
+
+            var body = new
+            {
+                files = files,
+                importMode = "auto",
+                name = "ManualImport",
+                replaceExistingFiles = true
+            };
+
+            try
+            {
+                var json = await CallLidarrAsync(HttpMethod.Post, "api/v1/command", body).ConfigureAwait(false);
+                // if we got here the call succeeded
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
     }
 }

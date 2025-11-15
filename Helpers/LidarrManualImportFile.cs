@@ -9,6 +9,7 @@ namespace LidairrCompanion.Helpers
         private string _name = string.Empty;
         private int _id;
         private bool _isAssigned;
+        private bool _isMarkedNotSelected; // new
 
         public string Path
         {
@@ -34,6 +35,16 @@ namespace LidairrCompanion.Helpers
             get => _isAssigned;
             set => SetProperty(ref _isAssigned, value);
         }
+
+        // New: whether this file has been explicitly marked as "Not Selected" (move to NotSelectedPath)
+        public bool IsMarkedNotSelected
+        {
+            get => _isMarkedNotSelected;
+            set => SetProperty(ref _isMarkedNotSelected, value);
+        }
+
+        // Quality information returned by Lidarr for this file (quality + revision)
+        public LidarrManualFileQuality? Quality { get; set; }
 
         public event PropertyChangedEventHandler? PropertyChanged;
 
