@@ -1,7 +1,8 @@
-﻿using LidairrCompanion.Helpers;
-using LidairrCompanion.Models;
-using LidairrCompanion.Services;
+﻿using LidarrCompanion.Helpers;
+using LidarrCompanion.Models;
+using LidarrCompanion.Services;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Text.RegularExpressions;
 using System.Windows;
@@ -9,7 +10,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Threading;
 
-namespace LidairrCompanion
+namespace LidarrCompanion
 {
     public partial class MainWindow : Window
     {
@@ -36,7 +37,7 @@ namespace LidairrCompanion
         private bool _isBusy = false;
 
         // Audio player
-        private AudioService? _audioPlayer;
+        private FileAndAudioService? _audioPlayer;
         private ImportService _importService = new ImportService();
         private ProposalService _proposalService = new ProposalService();
 
@@ -238,7 +239,7 @@ namespace LidairrCompanion
 
             // Determine context text to show in the dialog (filename or lowest folder)
             var importPath = AppSettings.GetValue(SettingKey.LidarrImportPath);
-            bool isSingleFile = IsSingleFileRelease(selectedRecord.OutputPath, importPath);
+            bool isSingleFile = FileAndAudioService.IsSingleFileRelease(selectedRecord.OutputPath, importPath);
             string searchSource;
             if (isSingleFile)
             {
@@ -247,7 +248,7 @@ namespace LidairrCompanion
             }
             else
             {
-                searchSource = GetLowestFolderName(selectedRecord.OutputPath) ?? string.Empty;
+                searchSource = FileAndAudioService.GetLowestFolderName(selectedRecord.OutputPath) ?? string.Empty;
             }
 
             // Open the manual match dialog with the cached artists (may be empty). The dialog supports external search.
@@ -399,92 +400,9 @@ namespace LidairrCompanion
             }
         }
 
-        // Get the last folder segment from a path. If the path is a file, return its parent folder name.
-        private static string? GetLowestFolderName(string? path)
-        {
-            if (string.IsNullOrWhiteSpace(path))
-                return null;
-
-            // Trim trailing separators
-            path = path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-
-            // If path looks like a file (has extension), return the parent folder's name
-            if (Path.HasExtension(path))
-            {
-                var parent = Path.GetDirectoryName(path);
-                if (string.IsNullOrWhiteSpace(parent))
-                    return Path.GetFileName(path); // fallback
-                return Path.GetFileName(parent);
-            }
-
-            // Otherwise return the last segment
-            return Path.GetFileName(path);
-        }
-
-        // Normalise strings for comparison: lower-case, remove punctuation, collapse whitespace
-        private static string Normalize(string s)
-        {
-            if (string.IsNullOrWhiteSpace(s))
-                return string.Empty;
-
-            var lowered = s.ToLowerInvariant();
-            lowered = Regex.Replace(lowered, @"[.,;:!""'()\[\]\/\\\-_]+", " ");
-            lowered = Regex.Replace(lowered, @"\s+", " ").Trim();
-            return lowered;
-        }
-
-        // Normalize path for simple equality checks: unify separators and trim trailing separators.
-        private static string NormalizePathForComparison(string? path)
-        {
-            if (string.IsNullOrWhiteSpace(path))
-                return string.Empty;
-
-            var p = path.Trim();
-            p = p.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
-            p = p.TrimEnd(Path.DirectorySeparatorChar);
-            return p;
-        }
-
-        // Heuristic: determine whether this release should be treated as a single file.
-        // Rule:
-        // - If configured importPath is empty -> false
-        // - If outputPath equals importPath (after normalizing) -> single file
-        // - If outputPath is a file and its parent directory equals importPath -> single file
-        private static bool IsSingleFileRelease(string? outputPath, string? importPath)
-        {
-            if (string.IsNullOrWhiteSpace(importPath) || string.IsNullOrWhiteSpace(outputPath))
-                return false;
-
-            try
-            {
-                var normImport = NormalizePathForComparison(importPath);
-                var normOutput = NormalizePathForComparison(outputPath);
-
-                if (string.Equals(normOutput, normImport, StringComparison.OrdinalIgnoreCase))
-                    return true;
-
-                if (Path.HasExtension(outputPath))
-                {
-                    var parent = Path.GetDirectoryName(outputPath);
-                    if (!string.IsNullOrWhiteSpace(parent))
-                    {
-                        var normParent = NormalizePathForComparison(parent);
-                        if (string.Equals(normParent, normImport, StringComparison.OrdinalIgnoreCase))
-                            return true;
-                    }
-                }
-            }
-            catch
-            {
-                // If any path parsing fails, fall back to treating as folder (safer).
-            }
-
-            return false;
-        }
-
+        // Need one selected file and one selected track
         private async void btn_MarkMatch_Click(object sender, RoutedEventArgs e)
         {
-            // Need one selected file and one selected track
             if (list_Files_in_Release.SelectedItem is not LidarrManualImportFile selectedFile)
             {
                 MessageBox.Show("Select a file from 'Unimported Release Files' first.", "No file selected", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -518,11 +436,7 @@ namespace LidairrCompanion
                     return;
             }
 
-            // Mark assigned
-            selectedFile.IsAssigned = true;
-            selectedTrack.IsAssigned = true;
-            _assignedFileIds.Add(selectedFile.Id);
-            _assignedTrackIds.Add(selectedTrack.TrackId);
+
 
             // Highlight both lists by selecting the items (ListView selection visual)
             list_Files_in_Release.SelectedItem = selectedFile;
@@ -551,6 +465,12 @@ namespace LidairrCompanion
 
             // Use ProposalService to create and add proposals
             _proposalService.CreateManualAssignment(selectedFile, selectedTrack, selectedQueueRecord, _artists, _proposedActions, _manualImportFiles, _assignedFileIds, _assignedTrackIds);
+
+            // Mark assigned
+            selectedFile.IsAssigned = true;
+            selectedTrack.IsAssigned = true;
+            _assignedFileIds.Add(selectedFile.Id);
+            _assignedTrackIds.Add(selectedTrack.TrackId);
         }
 
         private void btn_UnselectMatch_Click(object sender, RoutedEventArgs e)
@@ -880,7 +800,7 @@ namespace LidairrCompanion
                     return;
                 }
 
-                _audioPlayer = new AudioService();
+                _audioPlayer = new FileAndAudioService();
                 try
                 {
                     _audioPlayer.PlayMapped(selectedFile.Path ?? string.Empty, serverImportPath, localMapping);
@@ -927,9 +847,47 @@ namespace LidairrCompanion
             var localMapping = AppSettings.GetValue(SettingKey.LidarrImportPathLocal);
             try
             {
-                var folder = AudioService.OpenContainingFolder(selectedFile.Path ?? string.Empty, serverImportPath, localMapping);
+                var folder = FileAndAudioService.OpenContainingFolder(selectedFile.Path ?? string.Empty, serverImportPath, localMapping);
                 // optional: display status
                 txt_Status.Text = folder;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to open folder: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void btn_OpenDeferFolder_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var path = AppSettings.GetValue(SettingKey.DeferDestinationPath);
+                if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
+                {
+                    MessageBox.Show("Defer folder is not configured or does not exist.", "Folder Missing", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                Process.Start(new ProcessStartInfo("explorer.exe", path) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to open folder: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void btn_OpenNotSelectedFolder_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var path = AppSettings.GetValue(SettingKey.NotSelectedPath);
+                if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
+                {
+                    MessageBox.Show("Not selected folder is not configured or does not exist.", "Folder Missing", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                Process.Start(new ProcessStartInfo("explorer.exe", path) { UseShellExecute = true });
             }
             catch (Exception ex)
             {

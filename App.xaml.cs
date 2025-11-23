@@ -1,6 +1,6 @@
 ﻿using System.Windows;
 
-namespace LidairrCompanion
+namespace LidarrCompanion
 {
     /// <summary>
     /// Interaction logic for App.xaml

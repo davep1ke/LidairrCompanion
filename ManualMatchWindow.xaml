@@ -1,4 +1,4 @@
-<Window x:Class="LidairrCompanion.ManualMatchWindow"
+<Window x:Class="LidarrCompanion.ManualMatchWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Select Artist" Height="400" Width="400" WindowStartupLocation="CenterOwner" ResizeMode="CanResize"

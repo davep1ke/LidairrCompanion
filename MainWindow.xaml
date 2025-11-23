@@ -1,19 +1,32 @@
-﻿<Window x:Class="LidairrCompanion.MainWindow"
+﻿<Window x:Class="LidarrCompanion.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:local="clr-namespace:LidairrCompanion"
-        xmlns:helpers="clr-namespace:LidairrCompanion.Helpers"
+        xmlns:local="clr-namespace:LidarrCompanion"
+        xmlns:helpers="clr-namespace:LidarrCompanion.Helpers"
         mc:Ignorable="d"
         Title="MainWindow" Height="966" Width="1278">
     <Grid Margin="0,0,0,8" x:Name="mainGrid">
-        <Button x:Name="btn_Settings" Content="Settings" Margin="0,0,10,10" Click="btn_Settings_Click" Height="20" VerticalAlignment="Bottom" HorizontalAlignment="Right" Width="76" Grid.Row="1" Grid.Column="1"/>
-        <Button x:Name="btn_GetFilesFromLidarr" Content="Get Next Files" HorizontalAlignment="Left" Margin="141,34,0,0" VerticalAlignment="Top" Width="127" Click="btn_GetFilesFromLidarr_Click"/>
-        <ListView x:Name="list_CurrentFiles" Margin="10,59,131,0" Height="180" VerticalAlignment="Top">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="253*"/>
+            <RowDefinition Height="314*"/>
+            <RowDefinition Height="375*"/>
+        </Grid.RowDefinitions>
+
+
+
+
+
+        <!-- GRID ROW 0-->
+
+
+
+        <Button x:Name="btn_GetFilesFromLidarr" Content="Get Next Files" HorizontalAlignment="Left" Margin="141,34,0,0" VerticalAlignment="Top" Width="127" Click="btn_GetFilesFromLidarr_Click" Height="20"/>
+        <ListView x:Name="list_CurrentFiles" Margin="10,59,131,14">
             <!-- Row colouring by Match enum (folders use greens, single-file matches use blues) -->
             <ListView.ItemContainerStyle>
-                <Style TargetType="ListViewItem">
+                <Style TargetType="{x:Type ListViewItem}">
                     <Setter Property="Background" Value="Transparent" />
                     <Style.Triggers>
                         <!-- If release has files moved to NotSelectedPath, show brown -->
@@ -57,12 +70,20 @@
             </ListView.View>
         </ListView>
 
-        <Button x:Name="btn_CheckOllama" Content="Check Ollama" Margin="0,34,243,0" Click="btn_CheckOllama_Click" HorizontalAlignment="Right" VerticalAlignment="Top" Width="106"/>
+        <Button x:Name="btn_CheckOllama" Content="Check Ollama" Margin="0,34,243,0" Click="btn_CheckOllama_Click" HorizontalAlignment="Right" VerticalAlignment="Top" Width="106" Height="20"/>
+        <Button x:Name="btn_GetArtists" Content="Get Artists" Margin="0,34,131,0" Click="btn_GetArtists_Click" HorizontalAlignment="Right" VerticalAlignment="Top" Width="106" Height="20"/>
+        <Label x:Name="lbl_artistCount" Content="Get Artists..." Margin="0,31,32,0" HorizontalAlignment="Right" VerticalAlignment="Top" Height="26" Width="73"/>
+        <Button x:Name="btn_autoReleaseMatchToArtist" Content="Auto Match" Margin="0,108,10,0" VerticalAlignment="Top" Click="btn_autoReleaseMatchToArtist_Click" HorizontalAlignment="Right" Width="116" Height="20"/>
+        <Button x:Name="btn_manualReleaseMatchToArtist" Content="Match Artist" Margin="0,83,10,0" VerticalAlignment="Top" Click="btn_manualReleaseMatchToArtist_Click" HorizontalAlignment="Right" Width="116" Height="20"/>
 
-        <Button x:Name="btn_AI_SearchMatch" Content="Auto Match" Margin="0,285,10,0" Click="btn_AI_SearchMatch_Click" Height="20" VerticalAlignment="Top" HorizontalAlignment="Right" Width="109"/>
-        <ListView x:Name="list_Files_in_Release" Margin="10,261,0,0" VerticalAlignment="Top" Height="222" HorizontalAlignment="Left" Width="504">
+        <Label x:Name="label_Copy1" Content="Unimported Releases:" HorizontalAlignment="Left" Margin="10,31,0,0" VerticalAlignment="Top" Width="167" Height="26"/>
+
+        <!-- GRID ROW 1-->
+
+        <Button x:Name="btn_AI_SearchMatch" Content="Auto Match" Margin="0,33,10,0" Click="btn_AI_SearchMatch_Click" Height="20" VerticalAlignment="Top" Grid.Row="1" HorizontalAlignment="Right" Width="109"/>
+        <ListView x:Name="list_Files_in_Release" Margin="10,33,0,33" HorizontalAlignment="Left" Width="504" Grid.Row="1">
             <ListView.ItemContainerStyle>
-                <Style TargetType="ListViewItem">
+                <Style TargetType="{x:Type ListViewItem}">
                     <!-- If file already assigned, disable selection and show light blue -->
                     <Style.Triggers>
                         <DataTrigger Binding="{Binding IsMarkedNotSelected}" Value="True">
@@ -84,9 +105,9 @@
             </ListView.View>
         </ListView>
 
-        <ListView x:Name="list_Artist_Releases" Margin="519,261,126,0" VerticalAlignment="Top" Height="222" SelectionMode="Single">
+        <ListView x:Name="list_Artist_Releases" Margin="519,33,126,33" SelectionMode="Single" Grid.Row="1">
             <ListView.ItemContainerStyle>
-                <Style TargetType="ListViewItem">
+                <Style TargetType="{x:Type ListViewItem}">
                     <Setter Property="Background" Value="Transparent"/>
                     <Style.Triggers>
                         <!-- Pre-matched (hasFile) -> grey so user knows it'll overwrite -->
@@ -122,38 +143,34 @@
             </ListView.View>
         </ListView>
 
-        <Button x:Name="btn_GetArtists" Content="Get Artists" Margin="0,34,131,0" Click="btn_GetArtists_Click" HorizontalAlignment="Right" VerticalAlignment="Top" Width="106"/>
-        <Label x:Name="lbl_artistCount" Content="Get Artists..." Margin="0,31,32,0" HorizontalAlignment="Right" VerticalAlignment="Top"/>
-        <Button x:Name="btn_autoReleaseMatchToArtist" Content="Auto Match" Margin="0,108,10,0" VerticalAlignment="Top" Click="btn_autoReleaseMatchToArtist_Click" HorizontalAlignment="Right" Width="116"/>
-        <Button x:Name="btn_manualReleaseMatchToArtist" Content="Match Artist" Margin="0,83,10,0" VerticalAlignment="Top" Click="btn_manualReleaseMatchToArtist_Click" HorizontalAlignment="Right" Width="116"/>
-        <Label x:Name="label" Content="Unimported Release Files:" HorizontalAlignment="Left" Margin="10,239,0,0" VerticalAlignment="Top" Width="167"/>
-        <Label x:Name="label_Copy" Content="Artist Release Files:" HorizontalAlignment="Left" Margin="519,239,0,0" VerticalAlignment="Top" Width="167"/>
-        <Label x:Name="label_Copy1" Content="Unimported Releases:" HorizontalAlignment="Left" Margin="10,31,0,0" VerticalAlignment="Top" Width="167"/>
-        <Label x:Name="label_Copy2" Content="Actions to Take" HorizontalAlignment="Left" Margin="10,488,0,0" VerticalAlignment="Top" Width="167"/>
 
+        <Button x:Name="btn_PlayTrack" Content="Play Track" Click="btn_PlayTrack_Click" MouseRightButtonUp="btn_PlayTrack_MouseRightButtonUp" Margin="405,0,0,9" HorizontalAlignment="Left" Width="109" RenderTransformOrigin="0.486,1.097" Grid.Row="1" Height="21" VerticalAlignment="Bottom"/>
+        <Button x:Name="btn_OpenReleaseFolder" Content="Open Folder" Click="btn_OpenReleaseFolder_Click" Margin="291,0,0,9" HorizontalAlignment="Left" Width="109" Grid.Row="1" Height="21" VerticalAlignment="Bottom"/>
 
-        <Button x:Name="btn_MarkMatch" Content="Mark Match" Click="btn_MarkMatch_Click" Margin="0,310,10,0" HorizontalAlignment="Right" Width="109" Height="20" VerticalAlignment="Top"/>
+        <Label x:Name="label" Content="Unimported Release Files:" HorizontalAlignment="Left" Margin="10,5,0,0" VerticalAlignment="Top" Width="167" Height="26" Grid.Row="1"/>
+        <Label x:Name="label_Copy" Content="Artist Release Files:" HorizontalAlignment="Left" Margin="519,5,0,0" VerticalAlignment="Top" Width="167" Height="26" Grid.Row="1"/>
+        <Button x:Name="btn_ClearProposed" Content="Clear" Click="btn_ClearProposed_Click" Margin="0,121,10,0" Height="21" VerticalAlignment="Top" Grid.Row="1" HorizontalAlignment="Right" Width="109"/>
+        <Button x:Name="btn_NotForImport" Content="Not For Import" Click="btn_NotForImport_Click" Margin="0,96,10,0" HorizontalAlignment="Right" Width="109" Height="21" VerticalAlignment="Top" Grid.Row="1"/>
 
+        <Label x:Name="label_Copy2" Content="Actions to Take" HorizontalAlignment="Left" Margin="10,10,0,278" Width="168" Grid.Row="2"/>
+        <Button x:Name="btn_MarkMatch" Content="Mark Match" Click="btn_MarkMatch_Click" Margin="0,58,10,0" HorizontalAlignment="Right" Width="109" Height="20" VerticalAlignment="Top" Grid.Row="1"/>
 
-        <Label Content="Sort Mode" Margin="0,435,10,0" HorizontalAlignment="Right" Width="109" Height="23" VerticalAlignment="Top"/>
-        <ComboBox x:Name="cmb_SortMode" SelectionChanged="cmb_SortMode_SelectionChanged" Margin="1159,0,0,0" Height="23" VerticalAlignment="Center" HorizontalAlignment="Left" Width="109">
+        <Label Content="Sort Mode" Margin="0,191,10,0" HorizontalAlignment="Right" Width="109" Height="23" VerticalAlignment="Top" Grid.Row="1"/>
+        <ComboBox x:Name="cmb_SortMode" SelectionChanged="cmb_SortMode_SelectionChanged" Margin="0,219,10,0" HorizontalAlignment="Right" Width="109" Height="23" VerticalAlignment="Top" Grid.Row="1">
             <ComboBoxItem Content="by Release" />
             <ComboBoxItem Content="by Track Num" />
             <ComboBoxItem Content="by Track Name" />
             <ComboBoxItem Content="by Best" IsSelected="True" />
         </ComboBox>
 
+        <!-- GRID ROW 2-->
 
-        <Button x:Name="btn_UnselectMatch" Content="Unselect" Click="btn_UnselectMatch_Click" Margin="0,539,10,0" HorizontalAlignment="Right" Width="109" Height="21" VerticalAlignment="Top"/>
-        <Button x:Name="btn_ClearProposed" Content="Clear" Click="btn_ClearProposed_Click" Margin="0,591,10,0" HorizontalAlignment="Right" Width="109" Height="21" VerticalAlignment="Top"/>
-        <Button x:Name="btn_NotForImport" Content="Not For Import" Click="btn_NotForImport_Click" Margin="0,335,10,0" HorizontalAlignment="Right" Width="109" Height="21" VerticalAlignment="Top"/>
-        <Button x:Name="btn_PlayTrack" Content="Play Track" Click="btn_PlayTrack_Click" MouseRightButtonUp="btn_PlayTrack_MouseRightButtonUp" Margin="0,360,10,0" HorizontalAlignment="Right" Width="109" Height="21" VerticalAlignment="Top"/>
-        <Button x:Name="btn_OpenReleaseFolder" Content="Open Folder" Click="btn_OpenReleaseFolder_Click" Margin="0,385,10,0" HorizontalAlignment="Right" Width="109" Height="21" VerticalAlignment="Top"/>
+
 
         <!-- Proposed actions list: now bound to runtime collection -->
-        <ListView x:Name="list_Proposed_Actions" Margin="10,514,131,35">
+        <ListView x:Name="list_Proposed_Actions" Margin="10,40,131,35" Grid.Row="2">
             <ListView.ItemContainerStyle>
-                <Style TargetType="ListViewItem">
+                <Style TargetType="{x:Type ListViewItem}">
                     <Setter Property="Background" Value="Transparent"/>
                     <Style.Triggers>
                         <DataTrigger Binding="{Binding IsNotForImport}" Value="True">
@@ -174,9 +191,16 @@
                 </GridView>
             </ListView.View>
         </ListView>
-        <Button x:Name="btn_Import" Content="Process Actions" Click="btn_Import_Click" Margin="0,565,10,0" HorizontalAlignment="Right" Width="109" Height="21" VerticalAlignment="Top"/>
+
+        <Button x:Name="btn_UnselectMatch" Content="Unselect" Click="btn_UnselectMatch_Click" Margin="0,143,10,0" HorizontalAlignment="Right" Width="109" Height="21" VerticalAlignment="Top" Grid.Row="2"/>
+
+
+
+
+        <Button x:Name="btn_Import" Content="Process Actions" Click="btn_Import_Click" Margin="0,40,10,0" HorizontalAlignment="Right" Width="109" Height="21" VerticalAlignment="Top" Grid.Row="2"/>
 
         <!-- Status Text at bottom -->
-        <TextBlock x:Name="txt_Status" Text="" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="10,0,0,10" />
+        <TextBlock x:Name="txt_Status" Text="" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="10,0,0,10" Grid.Row="2" Height="16" Width="0" />
+        <Button x:Name="btn_Settings" Content="Settings" Margin="0,0,10,10" Click="btn_Settings_Click" Height="20" VerticalAlignment="Bottom" HorizontalAlignment="Right" Width="76" Grid.Row="2"/>
     </Grid>
 </Window>

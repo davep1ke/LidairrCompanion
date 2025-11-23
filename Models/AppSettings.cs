@@ -3,8 +3,9 @@ using System.IO;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Linq;
 
-namespace LidairrCompanion.Models
+namespace LidarrCompanion.Models
 {
     // Attribute to attach metadata to settings enum members
     [AttributeUsage(AttributeTargets.Field)]
@@ -13,80 +14,110 @@ namespace LidairrCompanion.Models
         public Type Type { get; }
         public string Description { get; }
         public object DefaultValue { get; }
+        public string Category { get; }
 
-        public SettingAttribute(Type type, string description)
+        public SettingAttribute(Type type, string description, string category = "")
         {
             Type = type;
             Description = description;
+            Category = string.IsNullOrWhiteSpace(category) ? "General" : category;
             if (type == typeof(bool)) DefaultValue = false;
-            else if (type == typeof(int)) DefaultValue = 0;
+            else if (type == typeof(int)) DefaultValue =0;
             else DefaultValue = string.Empty;
         }
 
-        public SettingAttribute(Type type, string description, object defaultValue)
+        public SettingAttribute(Type type, string description, object defaultValue, string category = "")
         {
             Type = type;
             Description = description;
+            Category = string.IsNullOrWhiteSpace(category) ? "General" : category;
             DefaultValue = defaultValue ?? (type == typeof(bool) ? (object)false : type == typeof(int) ? (object)0 : string.Empty);
         }
     }
 
     public enum SettingKey
     {
-        [Setting(typeof(string), "Base URL for your Lidarr instance")]
+        // Lidarr
+        [Setting(typeof(string), "Base URL for your Lidarr instance", "Lidarr")]
         LidarrURL,
-        [Setting(typeof(string), "API key for Lidarr")]
+        [Setting(typeof(string), "API key for Lidarr", "Lidarr")]
         LidarrAPIKey,
-        [Setting(typeof(int), "HTTP timeout in seconds for Lidarr calls", 30)]
+        [Setting(typeof(int), "HTTP timeout in seconds for Lidarr calls",30, "Lidarr")]
         LidarrHttpTimeout,
-        [Setting(typeof(string), "Import path used by Lidarr [Server]")]
+
+        // Import
+        [Setting(typeof(string), "Import path used by Lidarr [Server]", "Import")]
         LidarrImportPath,
-        [Setting(typeof(string), "Local mapping for Lidarr import path [Local]")]
+        [Setting(typeof(string), "Local mapping for Lidarr import path [Local]", "Import")]
         LidarrImportPathLocal,
 
         //Ollama
-        [Setting(typeof(string), "URL for Ollama server")]
+        [Setting(typeof(string), "URL for Ollama server", "Ollama")]
         OllamaURL,
-        [Setting(typeof(string), "Ollama model to use")]
+        [Setting(typeof(string), "Ollama model to use", "Ollama")]
         OllamaModel,
 
         //Backups and Moving
-        [Setting(typeof(bool), "Create a backup of files before importing")]
+        [Setting(typeof(bool), "Create a backup of files before importing", "Backup")]
         BackupFilesBeforeImport,
-        [Setting(typeof(string), "Root folder where backups will be stored [Local]")]
+        [Setting(typeof(string), "Root folder where backups will be stored [Local]", "Backup")]
         BackupRootFolder,
         //[Setting(typeof(string), "Path pattern or folder to exclude from importing")]
         //DontImportFilesPath,
-        [Setting(typeof(string), "Path to move files that are marked 'Not Selected' before import [Local]")]
+        [Setting(typeof(string), "Path to move files that are marked 'Not Selected' before import [Local]", "NotSelectedFiles")]
         NotSelectedPath,
 
         //Copy files
-        [Setting(typeof(bool), "Also copy imported files to a separate location")]
+        [Setting(typeof(bool), "Also copy imported files to a separate location", "Copy")]
         CopyImportedFiles,
-        [Setting(typeof(string), "Destination path for copied imported files [Local]")]
+        [Setting(typeof(string), "Destination path for copied imported files [Local]", "Copy")]
         CopyImportedFilesPath,
 
-        // Match scoring configuration (max points)
-        [Setting(typeof(int), "Direct match max score (words match irrespective of order)", 15)]
+        // Defer options
+        [Setting(typeof(bool), "Also copy files that have been deferred", "Defer")]
+        CopyDeferredFiles,
+        [Setting(typeof(bool), "Also backup files that have been deferred", "Defer")]
+        BackupDeferredFiles,
+        [Setting(typeof(string), "Destination path for deferred files [Local]", "Defer")]
+        DeferDestinationPath,
+
+        // Match scoring configuration (max points) - Weights
+        [Setting(typeof(int), "Direct match max score (words match irrespective of order)",15, "Weights")]
         Direct,
-        [Setting(typeof(int), "Exact match max score (full string match)", 10)]
+        [Setting(typeof(int), "Exact match max score (full string match)",10, "Weights")]
         Exact,
-        [Setting(typeof(int), "Clean match max score (cleaned words percentage)", 8)]
+        [Setting(typeof(int), "Clean match max score (cleaned words percentage)",8, "Weights")]
         Clean,
-        [Setting(typeof(int), "Minimal match max score (minimalized words percentage)", 6)]
+        [Setting(typeof(int), "Minimal match max score (minimalized words percentage)",6, "Weights")]
         Minimal,
-        [Setting(typeof(int), "MinClean match max score (minimal+clean overlap percentage)", 4)]
+        [Setting(typeof(int), "MinClean match max score (minimal+clean overlap percentage)",4, "Weights")]
         MinClean,
-        [Setting(typeof(int), "Release-level boost when other files are assigned", 10)]
+        [Setting(typeof(int), "Release-level boost when other files are assigned",10, "Weights")]
         ReleaseBoost,
     }
 
 
-    public class SettingItem
+    public class SettingItem : System.ComponentModel.INotifyPropertyChanged
     {
-        public string Name { get; set; }
-        public string Value { get; set; }
-        public string Description { get; set; }
+        private string _name = string.Empty;
+        private string _value = string.Empty;
+        private string _description = string.Empty;
+        private string _category = string.Empty;
+        private bool _isHighlighted = false;
+
+        public string Name { get => _name; set { if (_name != value) { _name = value; OnPropertyChanged(nameof(Name)); } } }
+        public string Value { get => _value; set { if (_value != value) { _value = value; OnPropertyChanged(nameof(Value)); } } }
+        public string Description { get => _description; set { if (_description != value) { _description = value; OnPropertyChanged(nameof(Description)); } } }
+        public string Category { get => _category; set { if (_category != value) { _category = value; OnPropertyChanged(nameof(Category)); } } }
+
+        // New: whether the UI should display this setting as highlighted (bold)
+        public bool IsHighlighted { get => _isHighlighted; set { if (_isHighlighted != value) { _isHighlighted = value; OnPropertyChanged(nameof(IsHighlighted)); } } }
+
+        public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+        protected void OnPropertyChanged(string propName)
+        {
+            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(propName));
+        }
     }
 
     public class AppSettings
@@ -109,7 +140,7 @@ namespace LidairrCompanion.Models
         {
             if (!Enum.TryParse<SettingKey>(name, out var k)) return null;
             var mem = typeof(SettingKey).GetMember(k.ToString());
-            if (mem != null && mem.Length > 0)
+            if (mem != null && mem.Length >0)
             {
                 return mem[0].GetCustomAttribute<SettingAttribute>();
             }
@@ -128,6 +159,13 @@ namespace LidairrCompanion.Models
             var attr = GetAttributeForKey(name);
             if (attr != null) return attr.Description;
             return string.Empty;
+        }
+
+        private static string GetCategoryForKey(string name)
+        {
+            var attr = GetAttributeForKey(name);
+            if (attr != null) return attr.Category;
+            return "General";
         }
 
         private static object DefaultValueForType(Type t)
@@ -179,10 +217,21 @@ namespace LidairrCompanion.Models
         public ObservableCollection<SettingItem> ToCollection()
         {
             var collection = new ObservableCollection<SettingItem>();
-            foreach (var kvp in Settings)
-            {
-                collection.Add(new SettingItem { Name = kvp.Key, Value = ObjectToString(kvp.Value), Description = GetDescriptionForKey(kvp.Key) });
-            }
+            // Only include keys that are defined in the enum; get their category and description
+            var validKeys = Enum.GetNames(typeof(SettingKey)).ToHashSet();
+            var items = Settings
+                .Where(kvp => validKeys.Contains(kvp.Key))
+                .Select(kvp => new SettingItem
+                {
+                    Name = kvp.Key,
+                    Value = ObjectToString(kvp.Value),
+                    Description = GetDescriptionForKey(kvp.Key),
+                    Category = GetCategoryForKey(kvp.Key)
+                })
+                .OrderBy(si => si.Category)
+                .ThenBy(si => si.Name);
+
+            foreach (var it in items) collection.Add(it);
             return collection;
         }
 
@@ -253,6 +302,12 @@ namespace LidairrCompanion.Models
             {
                 Current = new AppSettings();
             }
+
+            // Discard any keys not present in the SettingKey enum
+            var validKeys = Enum.GetNames(typeof(SettingKey)).ToHashSet();
+            Current.Settings = Current.Settings
+                .Where(kvp => validKeys.Contains(kvp.Key))
+                .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
 
             // Convert any JsonElement values to appropriate CLR types based on the enum attributes
             var keys = Current.Settings.Keys.ToList();

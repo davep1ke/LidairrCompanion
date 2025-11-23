@@ -1,9 +1,9 @@
-using LidairrCompanion.Helpers;
-using LidairrCompanion.Models;
+using LidarrCompanion.Helpers;
+using LidarrCompanion.Models;
 using System.Collections.ObjectModel;
 using System.IO;
 
-namespace LidairrCompanion.Services
+namespace LidarrCompanion.Services
 {
     public class ImportResult
     {

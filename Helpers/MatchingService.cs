@@ -1,8 +1,9 @@
-using LidairrCompanion.Models;
+using LidarrCompanion.Models;
+using LidarrCompanion.Services;
 using System.IO;
 using System.Text.RegularExpressions;
 
-namespace LidairrCompanion.Helpers
+namespace LidarrCompanion.Helpers
 {
     public static class MatchingService
     {
@@ -12,15 +13,10 @@ namespace LidairrCompanion.Helpers
             return await lidarr.GetAlbumsByArtistAsync(artistId);
         }
 
+        // Use FileAndAudioService.Normalize for string normalization
         public static string Normalize(string s)
         {
-            if (string.IsNullOrWhiteSpace(s))
-                return string.Empty;
-
-            var lowered = s.ToLowerInvariant();
-            lowered = Regex.Replace(lowered, @"[.,;:!""'()\[\]/\\\-_]+", " ");
-            lowered = Regex.Replace(lowered, @"\s+", " ").Trim();
-            return lowered;
+            return FileAndAudioService.Normalize(s);
         }
 
         // Auto match logic moved from MainWindow
@@ -34,13 +30,13 @@ namespace LidairrCompanion.Helpers
                 record.Match = ReleaseMatchType.None;
                 record.MatchedArtist = string.Empty;
 
-                var lastFolder = GetLowestFolderName(record.OutputPath);
+                var lastFolder = FileAndAudioService.GetLowestFolderName(record.OutputPath);
                 if (string.IsNullOrWhiteSpace(lastFolder))
                     continue;
 
                 var normalizedFolder = Normalize(lastFolder);
 
-                bool isSingleFile = IsSingleFileRelease(record.OutputPath, importPath);
+                bool isSingleFile = FileAndAudioService.IsSingleFileRelease(record.OutputPath, importPath);
 
                 if (isSingleFile)
                 {
@@ -126,70 +122,6 @@ namespace LidairrCompanion.Helpers
                     }
                 }
             }
-        }
-
-        // Helper: Get the last folder segment from a path. If the path is a file, return its parent folder name.
-        private static string? GetLowestFolderName(string? path)
-        {
-            if (string.IsNullOrWhiteSpace(path))
-                return null;
-
-            path = path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-
-            if (Path.HasExtension(path))
-            {
-                var parent = Path.GetDirectoryName(path);
-                if (string.IsNullOrWhiteSpace(parent))
-                    return Path.GetFileName(path);
-                return Path.GetFileName(parent);
-            }
-
-            return Path.GetFileName(path);
-        }
-
-        // Helper: determine whether this release should be treated as a single file.
-        private static bool IsSingleFileRelease(string? outputPath, string? importPath)
-        {
-            if (string.IsNullOrWhiteSpace(importPath) || string.IsNullOrWhiteSpace(outputPath))
-                return false;
-
-            try
-            {
-                var normImport = NormalizePathForComparison(importPath);
-                var normOutput = NormalizePathForComparison(outputPath);
-
-                if (string.Equals(normOutput, normImport, StringComparison.OrdinalIgnoreCase))
-                    return true;
-
-                if (Path.HasExtension(outputPath))
-                {
-                    var parent = Path.GetDirectoryName(outputPath);
-                    if (!string.IsNullOrWhiteSpace(parent))
-                    {
-                        var normParent = NormalizePathForComparison(parent);
-                        if (string.Equals(normParent, normImport, StringComparison.OrdinalIgnoreCase))
-                            return true;
-                    }
-                }
-            }
-            catch
-            {
-                // If any path parsing fails, fall back to treating as folder (safer).
-            }
-
-            return false;
-        }
-
-        // Normalize path helper used by IsSingleFileRelease
-        private static string NormalizePathForComparison(string? path)
-        {
-            if (string.IsNullOrWhiteSpace(path))
-                return string.Empty;
-
-            var p = path.Trim();
-            p = p.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
-            p = p.TrimEnd(Path.DirectorySeparatorChar);
-            return p;
         }
 
         // Build artist releases/tracks from UI collections (MainWindow passes them)
@@ -378,7 +310,6 @@ namespace LidairrCompanion.Helpers
 
         public static int ParseTrackNumber(string trackLabel)
         {
-            // Expected formats: "1. Title" or "01 - Title". Try to parse leading number.
             if (string.IsNullOrWhiteSpace(trackLabel)) return int.MaxValue;
             var m = Regex.Match(trackLabel.Trim(), "^(\\d+)");
             if (m.Success && int.TryParse(m.Groups[1].Value, out var n)) return n;

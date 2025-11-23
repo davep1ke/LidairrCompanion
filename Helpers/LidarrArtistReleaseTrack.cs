@@ -1,7 +1,7 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 
-namespace LidairrCompanion.Helpers
+namespace LidarrCompanion.Helpers
 {
     // View model used to show Release + Track rows in the UI.
     public class LidarrArtistReleaseTrack : INotifyPropertyChanged

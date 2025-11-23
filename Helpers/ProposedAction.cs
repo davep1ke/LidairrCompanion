@@ -1,4 +1,4 @@
-namespace LidairrCompanion.Helpers
+namespace LidarrCompanion.Helpers
 {
     public class ProposedAction
     {

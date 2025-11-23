@@ -1,9 +1,9 @@
-using LidairrCompanion.Helpers;
+using LidarrCompanion.Helpers;
 using System.Collections.ObjectModel;
 using System.Text.Json;
 using System.Windows;
 
-namespace LidairrCompanion
+namespace LidarrCompanion
 {
     public partial class ManualMatchWindow : Window
     {

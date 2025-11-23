@@ -1,7 +1,7 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 
-namespace LidairrCompanion.Helpers
+namespace LidarrCompanion.Helpers
 {
     public enum ReleaseMatchType
     {

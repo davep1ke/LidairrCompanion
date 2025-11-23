@@ -1,9 +1,9 @@
-using LidairrCompanion.Helpers;
-using LidairrCompanion.Models;
+using LidarrCompanion.Helpers;
+using LidarrCompanion.Models;
 using System.Collections.ObjectModel;
 using System.IO;
 
-namespace LidairrCompanion.Services
+namespace LidarrCompanion.Services
 {
     public class ProposalService
     {
@@ -130,7 +130,7 @@ namespace LidairrCompanion.Services
             // Create move-to-not-selected proposals for other files in same folder
             try
             {
-                var notSelectedRoot = LidairrCompanion.Models.AppSettings.GetValue(LidairrCompanion.Models.SettingKey.NotSelectedPath);
+                var notSelectedRoot = LidarrCompanion.Models.AppSettings.GetValue(LidarrCompanion.Models.SettingKey.NotSelectedPath);
                 var selectedParent = Path.GetDirectoryName(selectedFile.Path) ?? string.Empty;
                 foreach (var file in manualImportFiles)
                 {

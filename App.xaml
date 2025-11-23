@@ -1,7 +1,7 @@
-﻿<Application x:Class="LidairrCompanion.App"
+﻿<Application x:Class="LidarrCompanion.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:local="clr-namespace:LidairrCompanion"
+             xmlns:local="clr-namespace:LidarrCompanion"
              StartupUri="MainWindow.xaml">
     <Application.Resources>
          

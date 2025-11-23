@@ -1,10 +1,10 @@
-using LidairrCompanion.Models;
+using LidarrCompanion.Models;
 using System.IO;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 
-namespace LidairrCompanion.Helpers
+namespace LidarrCompanion.Helpers
 {
     public class OllamaHelper
     {

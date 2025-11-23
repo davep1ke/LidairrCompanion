@@ -1,18 +1,20 @@
 using System.Diagnostics;
 using System.IO;
 using System.Windows.Media;
+using System;
+using System.Text.RegularExpressions;
 
-namespace LidairrCompanion.Services
+namespace LidarrCompanion.Services
 {
-    // Simple audio play/pause helper using MediaPlayer. Runs on UI thread Dispatcher for WPF.
-    public class AudioService : IDisposable
+    // Combined file and audio helper: audio playback plus file/path helpers used across the app.
+    public class FileAndAudioService : IDisposable
     {
         private readonly MediaPlayer _player = new MediaPlayer();
         private bool _isPlaying = false;
 
         public bool IsPlaying => _isPlaying;
 
-        public AudioService()
+        public FileAndAudioService()
         {
             // nothing
         }
@@ -111,6 +113,89 @@ namespace LidairrCompanion.Services
             {
                 try { return _player.Position; } catch { return null; }
             }
+        }
+
+        // Get the last folder segment from a path. If the path is a file, return its parent folder name.
+        public static string? GetLowestFolderName(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return null;
+
+            // Trim trailing separators
+            path = path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+            // If path looks like a file (has extension), return the parent folder's name
+            if (Path.HasExtension(path))
+            {
+                var parent = Path.GetDirectoryName(path);
+                if (string.IsNullOrWhiteSpace(parent))
+                    return Path.GetFileName(path); // fallback
+                return Path.GetFileName(parent);
+            }
+
+            // Otherwise return the last segment
+            return Path.GetFileName(path);
+        }
+
+        // Normalise strings for comparison: lower-case, remove punctuation, collapse whitespace
+        public static string Normalize(string s)
+        {
+            if (string.IsNullOrWhiteSpace(s))
+                return string.Empty;
+
+            var lowered = s.ToLowerInvariant();
+            lowered = Regex.Replace(lowered, @"[.,;:!\""'()\[\]\/\\\-_]+", " ");
+            lowered = Regex.Replace(lowered, @"\s+", " ").Trim();
+            return lowered;
+        }
+
+        // Normalize path for simple equality checks: unify separators and trim trailing separators.
+        public static string NormalizePathForComparison(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return string.Empty;
+
+            var p = path.Trim();
+            p = p.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+            p = p.TrimEnd(Path.DirectorySeparatorChar);
+            return p;
+        }
+
+        // Heuristic: determine whether this release should be treated as a single file.
+        // Rule:
+        // - If configured importPath is empty -> false
+        // - If outputPath equals importPath (after normalizing) -> single file
+        // - If outputPath is a file and its parent directory equals importPath -> single file
+        public static bool IsSingleFileRelease(string? outputPath, string? importPath)
+        {
+            if (string.IsNullOrWhiteSpace(importPath) || string.IsNullOrWhiteSpace(outputPath))
+                return false;
+
+            try
+            {
+                var normImport = NormalizePathForComparison(importPath);
+                var normOutput = NormalizePathForComparison(outputPath);
+
+                if (string.Equals(normOutput, normImport, StringComparison.OrdinalIgnoreCase))
+                    return true;
+
+                if (Path.HasExtension(outputPath))
+                {
+                    var parent = Path.GetDirectoryName(outputPath);
+                    if (!string.IsNullOrWhiteSpace(parent))
+                    {
+                        var normParent = NormalizePathForComparison(parent);
+                        if (string.Equals(normParent, normImport, StringComparison.OrdinalIgnoreCase))
+                            return true;
+                    }
+                }
+            }
+            catch
+            {
+                // If any path parsing fails, fall back to treating as folder (safer).
+            }
+
+            return false;
         }
     }
 }

@@ -1,8 +1,8 @@
-using LidairrCompanion.Models;
+using LidarrCompanion.Models;
 using System.Net.Http;
 using System.Text.Json;
 
-namespace LidairrCompanion.Helpers
+namespace LidarrCompanion.Helpers
 {
     public class LidarrHelper
     {
