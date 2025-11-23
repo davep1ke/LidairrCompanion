@@ -58,6 +58,18 @@ namespace LidarrCompanion.Services
             var resolved = ImportService.ResolveMappedPath(filePath, Models.SettingKey.LidarrImportPath, true);
             if (string.IsNullOrWhiteSpace(resolved)) throw new ArgumentNullException(nameof(filePath));
 
+            // Normalize separators and get full path to avoid mixed slash issues
+            try
+            {
+                resolved = resolved.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+                resolved = Path.GetFullPath(resolved);
+            }
+            catch
+            {
+                // If Path.GetFullPath fails, fall back to the normalized path
+                try { resolved = resolved.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar); } catch { }
+            }
+
             var folder = resolved;
             if (File.Exists(resolved)) folder = Path.GetDirectoryName(resolved) ?? resolved;
 
@@ -70,7 +82,8 @@ namespace LidarrCompanion.Services
                 // Use explorer with /select to highlight the file if file exists
                 if (File.Exists(resolved))
                 {
-                    var arg = $"/select,\"{resolved}\"";
+                    // Build argument as: /select,"<fullpath>" — avoid injecting extra escaping
+                    var arg = "/select," + "\"" + resolved + "\"";
                     Process.Start(new ProcessStartInfo("explorer.exe", arg) { UseShellExecute = true });
                 }
                 else

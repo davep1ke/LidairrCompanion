@@ -62,24 +62,27 @@ namespace LidarrCompanion.Models
         BackupFilesBeforeImport,
         [Setting(typeof(string), "Root folder where backups will be stored [Local]", "Backup")]
         BackupRootFolder,
-        //[Setting(typeof(string), "Path pattern or folder to exclude from importing")]
-        //DontImportFilesPath,
-        [Setting(typeof(string), "Path to move files that are marked 'Not Selected' before import [Local]", "NotSelectedFiles")]
-        NotSelectedPath,
-
-        //Copy files
         [Setting(typeof(bool), "Also copy imported files to a separate location", "Copy")]
         CopyImportedFiles,
         [Setting(typeof(string), "Destination path for copied imported files [Local]", "Copy")]
         CopyImportedFilesPath,
 
+        //Not Selected
+        [Setting(typeof(string), "Path to move files that are marked 'Not Selected' before import [Local]", "NotSelectedFiles")]
+        NotSelectedPath,
+        [Setting(typeof(bool), "Also backup files that are moved to Not-Selected", "NotSelectedFiles")]
+        BackupNotSelectedFiles,
+        [Setting(typeof(bool), "Also copy files that are moved to Not-Selected", "NotSelectedFiles")]
+        CopyNotSelectedFiles,
+
         // Defer options
-        [Setting(typeof(bool), "Also copy files that have been deferred", "Defer")]
-        CopyDeferredFiles,
-        [Setting(typeof(bool), "Also backup files that have been deferred", "Defer")]
-        BackupDeferredFiles,
         [Setting(typeof(string), "Destination path for deferred files [Local]", "Defer")]
         DeferDestinationPath,
+        [Setting(typeof(bool), "Also backup files that have been deferred", "Defer")]
+        BackupDeferredFiles,
+        [Setting(typeof(bool), "Also copy files that have been deferred", "Defer")]
+        CopyDeferredFiles,
+
 
         // Match scoring configuration (max points) - Weights
         [Setting(typeof(int), "Direct match max score (words match irrespective of order)",15, "Weights")]

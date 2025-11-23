@@ -97,10 +97,10 @@ namespace LidarrCompanion
             { "Line_Releases_Defer", ("Releases → Defer", new[]{ SettingKey.DeferDestinationPath }) },
             { "Line_LidarrURL_Backup", ("Import → Backup", new[]{ SettingKey.LidarrImportPath, SettingKey.BackupFilesBeforeImport, SettingKey.BackupRootFolder }) },
             { "Line_Import_Copy", ("Import → Copy", new[]{ SettingKey.LidarrImportPath, SettingKey.CopyImportedFiles, SettingKey.CopyImportedFilesPath }) },
-            { "Line_NotSelected_Copy", ("Not Selected → Copy", new[]{ SettingKey.NotSelectedPath, SettingKey.CopyImportedFiles, SettingKey.CopyImportedFilesPath }) },
+            { "Line_NotSelected_Copy", ("Not Selected → Copy", new[]{ SettingKey.NotSelectedPath, SettingKey.CopyNotSelectedFiles, SettingKey.CopyImportedFilesPath }) },
             { "Line_Defer_Backup", ("Defer → Backup", new[]{ SettingKey.DeferDestinationPath, SettingKey.BackupDeferredFiles, SettingKey.BackupRootFolder }) },
             { "Line_Defer_Copy", ("Defer → Copy", new[]{ SettingKey.DeferDestinationPath, SettingKey.CopyDeferredFiles, SettingKey.CopyImportedFilesPath }) },
-            { "Line_NotSelected_Backup", ("Not Selected → Backup", new[]{ SettingKey.NotSelectedPath, SettingKey.BackupFilesBeforeImport, SettingKey.BackupRootFolder }) }
+            { "Line_NotSelected_Backup", ("Not Selected → Backup", new[]{ SettingKey.NotSelectedPath, SettingKey.BackupNotSelectedFiles, SettingKey.BackupRootFolder }) }
         };
 
         // Mapping boxes to friendly names + setting keys to highlight
@@ -228,6 +228,10 @@ namespace LidarrCompanion
             var backupDeferred = AppSettings.Current.GetTyped<bool>(SettingKey.BackupDeferredFiles);
             var deferPath = AppSettings.GetValue(SettingKey.DeferDestinationPath);
 
+            // NotSelected-specific flags
+            var copyNotSelected = AppSettings.Current.GetTyped<bool>(SettingKey.CopyNotSelectedFiles);
+            var backupNotSelected = AppSettings.Current.GetTyped<bool>(SettingKey.BackupNotSelectedFiles);
+
             // Determine brushes for each box
             var brushLidarr = (!string.IsNullOrWhiteSpace(lidarrUrl) && !string.IsNullOrWhiteSpace(lidarrApiKey)) ? BrushGreen : BrushRed;
 
@@ -332,13 +336,13 @@ namespace LidarrCompanion
             var lineImportCopy = this.FindName("Line_Import_Copy") as Line;
             if (lineImportCopy != null) lineImportCopy.Stroke = !copyImported ? BrushGray : MergeBrushes(brushImport, brushCopy);
             var lineNotSelectedCopy = this.FindName("Line_NotSelected_Copy") as Line;
-            if (lineNotSelectedCopy != null) lineNotSelectedCopy.Stroke = !copyImported ? BrushGray : MergeBrushes(brushNotSelected, brushCopy);
+            if (lineNotSelectedCopy != null) lineNotSelectedCopy.Stroke = !copyNotSelected ? BrushGray : MergeBrushes(brushNotSelected, brushCopy);
 
             // NotSelected -> Backup
             var lineNotSelectedBackup = this.FindName("Line_NotSelected_Backup") as Line;
             if (lineNotSelectedBackup != null)
             {
-                lineNotSelectedBackup.Stroke = MergeBrushes(brushNotSelected, brushBackup);
+                lineNotSelectedBackup.Stroke = !backupNotSelected ? BrushLightGray : MergeBrushes(brushNotSelected, brushBackup);
             }
 
             // Defer-related lines

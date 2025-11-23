@@ -14,10 +14,6 @@
             <RowDefinition Height="375*"/>
         </Grid.RowDefinitions>
 
-
-
-
-
         <!-- GRID ROW 0-->
 
 
@@ -70,7 +66,7 @@
             </ListView.View>
         </ListView>
 
-        <Button x:Name="btn_CheckOllama" Content="Check Ollama" Margin="0,34,243,0" Click="btn_CheckOllama_Click" HorizontalAlignment="Right" VerticalAlignment="Top" Width="106" Height="20"/>
+        <Button x:Name="btn_CheckOllama" Content="Check Ollama" Margin="0,0,91,0" Click="btn_CheckOllama_Click" HorizontalAlignment="Right" Width="106" Grid.Row="2" Height="20" VerticalAlignment="Bottom"/>
         <Button x:Name="btn_GetArtists" Content="Get Artists" Margin="0,34,131,0" Click="btn_GetArtists_Click" HorizontalAlignment="Right" VerticalAlignment="Top" Width="106" Height="20"/>
         <Label x:Name="lbl_artistCount" Content="Get Artists..." Margin="0,31,32,0" HorizontalAlignment="Right" VerticalAlignment="Top" Height="26" Width="73"/>
         <Button x:Name="btn_autoReleaseMatchToArtist" Content="Auto Match" Margin="0,108,10,0" VerticalAlignment="Top" Click="btn_autoReleaseMatchToArtist_Click" HorizontalAlignment="Right" Width="116" Height="20"/>
@@ -80,8 +76,8 @@
 
         <!-- GRID ROW 1-->
 
-        <Button x:Name="btn_AI_SearchMatch" Content="Auto Match" Margin="0,33,10,0" Click="btn_AI_SearchMatch_Click" Height="20" VerticalAlignment="Top" Grid.Row="1" HorizontalAlignment="Right" Width="109"/>
-        <ListView x:Name="list_Files_in_Release" Margin="10,33,0,33" HorizontalAlignment="Left" Width="504" Grid.Row="1">
+        <Button x:Name="btn_AI_SearchMatch" Content="Auto Match" Margin="0,261,10,0" Click="btn_AI_SearchMatch_Click" Height="20" VerticalAlignment="Top" Grid.Row="1" HorizontalAlignment="Right" Width="109"/>
+        <ListView x:Name="list_Files_in_Release" Margin="10,33,0,33" HorizontalAlignment="Left" Width="504" Grid.Row="1" SelectionMode="Extended">
             <ListView.ItemContainerStyle>
                 <Style TargetType="{x:Type ListViewItem}">
                     <!-- If file already assigned, disable selection and show light blue -->
@@ -144,13 +140,26 @@
         </ListView>
 
 
-        <Button x:Name="btn_PlayTrack" Content="Play Track" Click="btn_PlayTrack_Click" MouseRightButtonUp="btn_PlayTrack_MouseRightButtonUp" Margin="405,0,0,9" HorizontalAlignment="Left" Width="109" RenderTransformOrigin="0.486,1.097" Grid.Row="1" Height="21" VerticalAlignment="Bottom"/>
-        <Button x:Name="btn_OpenReleaseFolder" Content="Open Folder" Click="btn_OpenReleaseFolder_Click" Margin="291,0,0,9" HorizontalAlignment="Left" Width="109" Grid.Row="1" Height="21" VerticalAlignment="Bottom"/>
+        <Button x:Name="btn_PlayTrack" Content="Play Track" Click="btn_PlayTrack_Click" MouseRightButtonUp="btn_PlayTrack_MouseRightButtonUp" Margin="384,0,0,9" HorizontalAlignment="Left" Width="109" RenderTransformOrigin="0.486,1.097" Grid.Row="1" Height="21" VerticalAlignment="Bottom"/>
+        <Button x:Name="btn_OpenReleaseFolder" Click="btn_OpenReleaseFolder_Click" Margin="493,0,0,9" HorizontalAlignment="Left" Width="21" Grid.Row="1" Height="21" VerticalAlignment="Bottom">
+            <TextBlock Text="📁" FontSize="14" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        </Button>
 
         <Label x:Name="label" Content="Unimported Release Files:" HorizontalAlignment="Left" Margin="10,5,0,0" VerticalAlignment="Top" Width="167" Height="26" Grid.Row="1"/>
         <Label x:Name="label_Copy" Content="Artist Release Files:" HorizontalAlignment="Left" Margin="519,5,0,0" VerticalAlignment="Top" Width="167" Height="26" Grid.Row="1"/>
-        <Button x:Name="btn_ClearProposed" Content="Clear" Click="btn_ClearProposed_Click" Margin="0,121,10,0" Height="21" VerticalAlignment="Top" Grid.Row="1" HorizontalAlignment="Right" Width="109"/>
-        <Button x:Name="btn_NotForImport" Content="Not For Import" Click="btn_NotForImport_Click" Margin="0,96,10,0" HorizontalAlignment="Right" Width="109" Height="21" VerticalAlignment="Top" Grid.Row="1"/>
+        <Button x:Name="btn_ClearProposed" Content="Clear" Click="btn_ClearProposed_Click" Margin="0,129,10,0" Height="21" VerticalAlignment="Top" Grid.Row="1" HorizontalAlignment="Right" Width="109"/>
+
+        <!-- Defer Import button above Not For Import, with a small open-folder button to its right. Total combined width equals 109. -->
+        <Button x:Name="btn_DeferImport" Content="Defer Import" Click="btn_DeferImport_Click" Margin="0,81,30,0" HorizontalAlignment="Right" Width="89" Height="21" VerticalAlignment="Top" Grid.Row="1"/>
+        <Button x:Name="btn_OpenDeferFolder" Click="btn_OpenDeferFolder_Click" Margin="0,81,10,0" HorizontalAlignment="Right" Width="20" Height="21" VerticalAlignment="Top" Grid.Row="1">
+            <TextBlock Text="📁" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Top"/>
+        </Button>
+
+        <!-- Not For Import button with small folder-open button to its right. Combined width equals 109. -->
+        <Button x:Name="btn_NotForImport" Content="Not For Import" Click="btn_NotForImport_Click" Margin="0,105,30,0" HorizontalAlignment="Right" Width="89" Height="21" VerticalAlignment="Top" Grid.Row="1"/>
+        <Button x:Name="btn_OpenNotSelectedFolder" Click="btn_OpenNotSelectedFolder_Click" Margin="0,105,10,0" HorizontalAlignment="Right" Width="20" Height="21" VerticalAlignment="Top" Grid.Row="1">
+            <TextBlock Text="📁" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Top"/>
+        </Button>
 
         <Label x:Name="label_Copy2" Content="Actions to Take" HorizontalAlignment="Left" Margin="10,10,0,278" Width="168" Grid.Row="2"/>
         <Button x:Name="btn_MarkMatch" Content="Mark Match" Click="btn_MarkMatch_Click" Margin="0,58,10,0" HorizontalAlignment="Right" Width="109" Height="20" VerticalAlignment="Top" Grid.Row="1"/>
@@ -173,8 +182,13 @@
                 <Style TargetType="{x:Type ListViewItem}">
                     <Setter Property="Background" Value="Transparent"/>
                     <Style.Triggers>
+                        <!-- Failed import: highlight red -->
+                        <DataTrigger Binding="{Binding IsImportFailed}" Value="True">
+                            <Setter Property="Background" Value="Red"/>
+                            <Setter Property="Foreground" Value="White"/>
+                        </DataTrigger>
                         <DataTrigger Binding="{Binding IsNotForImport}" Value="True">
-                            <Setter Property="Background" Value="DarkRed"/>
+                            <Setter Property="Background" Value="Orange"/>
                             <Setter Property="Foreground" Value="White"/>
                         </DataTrigger>
                     </Style.Triggers>
@@ -192,15 +206,12 @@
             </ListView.View>
         </ListView>
 
-        <Button x:Name="btn_UnselectMatch" Content="Unselect" Click="btn_UnselectMatch_Click" Margin="0,143,10,0" HorizontalAlignment="Right" Width="109" Height="21" VerticalAlignment="Top" Grid.Row="2"/>
+        <Button x:Name="btn_UnselectMatch" Content="Unselect" Click="btn_UnselectMatch_Click" Margin="0,62,10,0" HorizontalAlignment="Right" Width="109" Height="21" VerticalAlignment="Top" Grid.Row="2"/>
 
-
-
-
-        <Button x:Name="btn_Import" Content="Process Actions" Click="btn_Import_Click" Margin="0,40,10,0" HorizontalAlignment="Right" Width="109" Height="21" VerticalAlignment="Top" Grid.Row="2"/>
+        <Button x:Name="btn_Import" Content="Process Actions" Click="btn_Import_Click" Margin="0,0,10,35" HorizontalAlignment="Right" Width="109" Grid.Row="2" Height="104" VerticalAlignment="Bottom"/>
 
         <!-- Status Text at bottom -->
         <TextBlock x:Name="txt_Status" Text="" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="10,0,0,10" Grid.Row="2" Height="16" Width="0" />
-        <Button x:Name="btn_Settings" Content="Settings" Margin="0,0,10,10" Click="btn_Settings_Click" Height="20" VerticalAlignment="Bottom" HorizontalAlignment="Right" Width="76" Grid.Row="2"/>
+        <Button x:Name="btn_Settings" Content="Settings" Margin="0,0,10,0" Click="btn_Settings_Click" Height="20" VerticalAlignment="Bottom" HorizontalAlignment="Right" Width="76" Grid.Row="2"/>
     </Grid>
 </Window>
