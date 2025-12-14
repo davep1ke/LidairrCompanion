@@ -41,15 +41,16 @@ namespace LidarrCompanion
                 // actionsSnapshot contains the same ProposedAction object references as _proposedActions
                 int removedCount = 0;
                 int failedCount = 0;
+
+                // Count successes based on ImportStatus on the snapshot (covers actions that ImportService removed from the live collection)
                 foreach (var pa in actionsSnapshot)
                 {
                     if (string.Equals(pa.ImportStatus, "Success", StringComparison.OrdinalIgnoreCase))
                     {
-                        // remove successful actions from the live collection
+                        removedCount++; // count this as processed successfully
                         if (_proposedActions.Contains(pa))
                         {
                             _proposedActions.Remove(pa);
-                            removedCount++;
                         }
                     }
                     else if (!string.IsNullOrWhiteSpace(pa.ImportStatus) && string.Equals(pa.ImportStatus, "Failed", StringComparison.OrdinalIgnoreCase))
@@ -90,9 +91,9 @@ namespace LidarrCompanion
 
         private void btn_ClearProposed_Click(object sender, RoutedEventArgs e)
         {
-            // clear any file-level NotSelected marks before clearing proposals
+            // clear any file-level proposed action marks before clearing proposals
             foreach (var f in _manualImportFiles)
-                f.IsMarkedNotSelected = false;
+                f.ProposedActionType = null;
 
             _proposedActions.Clear();
         }
@@ -111,9 +112,8 @@ namespace LidarrCompanion
 
             if (file != null)
             {
-                file.IsAssigned = false;
-                // clear any NotSelected mark on file when unselecting its proposal
-                file.IsMarkedNotSelected = false;
+                // clear file-level proposed action marker
+                file.ProposedActionType = null;
                 _assignedFileIds.Remove(file.Id);
             }
 
@@ -129,15 +129,15 @@ namespace LidarrCompanion
             var releaseKey = toRemove.OriginalRelease ?? string.Empty;
 
             // If there are no remaining assignment proposals for this release, remove any move-to-not-selected proposals for the same release
-            var hasAssignmentsForRelease = _proposedActions.Any(p => !p.IsMoveToNotSelected && (p.OriginalRelease ?? string.Empty) == releaseKey);
+            var hasAssignmentsForRelease = _proposedActions.Any(p => p.Action == LidarrCompanion.Helpers.ProposalActionType.Import && (p.OriginalRelease ?? string.Empty) == releaseKey);
             if (!hasAssignmentsForRelease)
             {
-                var movesToRemove = _proposedActions.Where(p => p.IsMoveToNotSelected && (p.OriginalRelease ?? string.Empty) == releaseKey).ToList();
+                var movesToRemove = _proposedActions.Where(p => p.Action == LidarrCompanion.Helpers.ProposalActionType.NotForImport && (p.OriginalRelease ?? string.Empty) == releaseKey).ToList();
                 foreach (var m in movesToRemove)
                 {
                     // clear corresponding file highlight
                     var f = _manualImportFiles.FirstOrDefault(x => x.Id == m.FileId);
-                    if (f != null) f.IsMarkedNotSelected = false;
+                    if (f != null) f.ProposedActionType = null;
 
                     _proposedActions.Remove(m);
                 }

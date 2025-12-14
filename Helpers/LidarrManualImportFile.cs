@@ -8,8 +8,7 @@ namespace LidarrCompanion.Helpers
         private string _path = string.Empty;
         private string _name = string.Empty;
         private int _id;
-        private bool _isAssigned;
-        private bool _isMarkedNotSelected; // new
+        private ProposalActionType? _proposedActionType;
 
         public string Path
         {
@@ -29,18 +28,11 @@ namespace LidarrCompanion.Helpers
             set => SetProperty(ref _id, value);
         }
 
-        // New: whether this file has already been assigned/matched in the UI
-        public bool IsAssigned
+        // New: which action (if any) is associated with this file for UI highlighting
+        public ProposalActionType? ProposedActionType
         {
-            get => _isAssigned;
-            set => SetProperty(ref _isAssigned, value);
-        }
-
-        // New: whether this file has been explicitly marked as "Not Selected" (move to NotSelectedPath)
-        public bool IsMarkedNotSelected
-        {
-            get => _isMarkedNotSelected;
-            set => SetProperty(ref _isMarkedNotSelected, value);
+            get => _proposedActionType;
+            set => SetProperty(ref _proposedActionType, value);
         }
 
         // Quality information returned by Lidarr for this file (quality + revision)

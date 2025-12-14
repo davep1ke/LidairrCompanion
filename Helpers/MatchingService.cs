@@ -209,8 +209,8 @@ namespace LidarrCompanion.Helpers
 
                 if (!trackLookup.TryGetValue(m.TrackId, out var info)) continue;
 
-                // Mark locally
-                file.IsAssigned = true;
+                // Mark file as assigned via proposed action type for UI highlighting
+                file.ProposedActionType = ProposalActionType.Import;
                 assignedFileIds.Add(file.Id);
 
                 var artistTrackRow = artistReleaseTracks.FirstOrDefault(t => t.TrackId == m.TrackId);
@@ -336,68 +336,83 @@ namespace LidarrCompanion.Helpers
             return percent * maxPoints;
         }
 
-        public static double ComputeMatchScore(string fileName, LidarrArtistReleaseTrack track)
+        public static double ComputeMatchScore(string fileName, LidarrArtistReleaseTrack track, string artistName)
         {
             // Score components: Direct, Exact, Clean, Minimal, MinClean
             if (string.IsNullOrWhiteSpace(fileName) || track == null) return 0.0;
 
-            var fileBase = Path.GetFileNameWithoutExtension(fileName) ?? fileName;
+            var fileBase = fileName; //TODO - THIS CAN PROBABLY BE REMOVED. Files will already have the ext removed by the caller. Folders won't have them anwyay.  // Path.GetFileNameWithoutExtension(fileName) ?? fileName;
             var trackTitle = StripTrackNumberPrefix(track.Track);
 
-            double score = 0.0;
+            // Build reference variants to compare against. Include artist, release and combinations where available.
+            var references = new List<string>();
+            if (!string.IsNullOrWhiteSpace(artistName))
+                references.Add($"{artistName} - {trackTitle}");
 
-            // Load configured max scores from settings
+            if (!string.IsNullOrWhiteSpace(track.Release))
+                references.Add($"{track.Release} - {trackTitle}");
+
+            if (!string.IsNullOrWhiteSpace(artistName) && !string.IsNullOrWhiteSpace(track.Release))
+                references.Add($"{artistName} - {track.Release} - {trackTitle}");
+
+            // Always consider plain track title as fallback
+            references.Add(trackTitle);
+
+            double bestOverall = 0.0;
+
+            // Load configured max scores from settings once
             var maxDirect = AppSettings.Current.GetTyped<int>(SettingKey.Direct);
             var maxExact = AppSettings.Current.GetTyped<int>(SettingKey.Exact);
             var maxClean = AppSettings.Current.GetTyped<int>(SettingKey.Clean);
             var maxMinimal = AppSettings.Current.GetTyped<int>(SettingKey.Minimal);
             var maxMinClean = AppSettings.Current.GetTyped<int>(SettingKey.MinClean);
 
-            // DIRECT: all words from fileBase appear in trackTitle (order not required)
-            var fileWords = fileBase.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).Select(w => w.Trim()).Where(w => w.Length > 0).ToArray();
-            var trackWords = trackTitle.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).Select(w => w.Trim()).Where(w => w.Length > 0).ToArray();
-            if (fileWords.Length > 0 && fileWords.All(fw => trackWords.Any(tw => string.Equals(fw, tw, StringComparison.OrdinalIgnoreCase))))
+            foreach (var trackReference in references.Where(r => !string.IsNullOrWhiteSpace(r)).Distinct())
             {
-                score += maxDirect; // direct match boost
-            }
-            else
-            {
+                // Compute individual component scores and take the best among them for this reference
+                double directScore = 0.0;
+                double exactScore = 0.0;
+                double cleanScore = 0.0;
+                double minimalScore = 0.0;
+                double minCleanScore = 0.0;
+
+                var fileWords = fileBase.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).Select(w => w.Trim()).Where(w => w.Length > 0).ToArray();
+                var trackWords = trackReference.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).Select(w => w.Trim()).Where(w => w.Length > 0).ToArray();
+
+                // DIRECT: all words from fileBase appear in trackReference (order not required)
+                if (fileWords.Length > 0 && fileWords.All(fw => trackWords.Any(tw => string.Equals(fw, tw, StringComparison.OrdinalIgnoreCase))))
+                {
+                    directScore = maxDirect; // direct match boost
+                }
+
                 // Exact full-string match
-                if (string.Equals(fileBase, trackTitle, StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(fileBase, trackReference, StringComparison.OrdinalIgnoreCase))
                 {
-                    score += maxExact;
+                    exactScore = maxExact;
                 }
-                else
-                {
-                    // CLEAN paths
-                    var fileClean = CleanString(fileBase);
-                    var trackClean = CleanString(trackTitle);
-                    score += WordMatchScore(fileClean, trackClean, maxClean);
 
-                    // MINIMAL paths
-                    var fileMin = MinimalString(fileClean);
-                    var trackMin = MinimalString(trackClean);
-                    score += WordMatchScore(fileMin, trackMin, maxMinimal);
+                // CLEAN paths
+                var fileClean = CleanString(fileBase);
+                var trackClean = CleanString(trackReference);
+                cleanScore = WordMatchScore(fileClean, trackClean, maxClean);
 
-                    // MINCLEAN overlap
-                    var fileMinClean = MinimalString(fileBase);
-                    var trackMinClean = MinimalString(trackTitle);
-                    score += WordMatchScore(fileMinClean, trackMinClean, maxMinClean);
-                }
+                // MINIMAL paths
+                var fileMin = MinimalString(fileClean);
+                var trackMin = MinimalString(trackClean);
+                minimalScore = WordMatchScore(fileMin, trackMin, maxMinimal);
+
+                // MINCLEAN overlap
+                var fileMinClean = MinimalString(fileBase);
+                var trackMinClean = MinimalString(trackReference);
+                minCleanScore = WordMatchScore(fileMinClean, trackMinClean, maxMinClean);
+
+                double score = Math.Max(Math.Max(Math.Max(Math.Max(directScore, exactScore), cleanScore), minimalScore), minCleanScore);
+
+                if (score > bestOverall) bestOverall = score;
             }
 
-            // Boost if release already has matches (other files assigned) but NOT if this specific file is already assigned or track.HasFile
-            if (track.IsAssigned || track.HasFile)
-            {
-                // do not boost if this specific file is the one assigned. We don't have access to file id here, caller ensures not to apply when specific file selected.
-            }
-            else
-            {
-                // If any other files in the release are assigned, boost by 10
-                // Note: caller should supply context if needed. We'll avoid adding here to prevent incorrect boosts.
-            }
-
-            return score;
+            // Do not apply release-level boost here; caller handles contextual boosts based on assigned files/tracks.
+            return bestOverall;
         }
 
         public static string CleanString(string s)

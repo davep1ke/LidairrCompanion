@@ -46,13 +46,13 @@ namespace LidarrCompanion
             AppSettings.Load();
 
             // _queueRecords and _artists are defined in the Unimported partial
-            list_CurrentFiles.ItemsSource = _queueRecords;
+            list_QueueRecords.ItemsSource = _queueRecords;
             list_Files_in_Release.ItemsSource = _manualImportFiles;
             list_Artist_Releases.ItemsSource = _artistReleaseTracks;
             list_Proposed_Actions.ItemsSource = _proposedActions;
 
-            // Event handlers: list_CurrentFiles.SelectionChanged is implemented in MainWindow.Unimported.cs
-            list_CurrentFiles.SelectionChanged += list_CurrentFiles_SelectionChanged;
+            // Event handlers: list_QueueRecords.SelectionChanged is implemented in MainWindow.Unimported.cs
+            list_QueueRecords.SelectionChanged += list_QueueRecords_SelectionChanged;
             list_Files_in_Release.SelectionChanged += list_Files_in_Release_SelectionChanged;
 
             // Hook command bindings to existing handlers (some handlers live in Unimported partial)
@@ -99,6 +99,9 @@ namespace LidarrCompanion
                 btn_Settings.IsEnabled = false;
                 btn_ClearProposed.IsEnabled = false;
                 btn_NotForImport.IsEnabled = false;
+                btn_UnlinkFile.IsEnabled = false;
+                btn_DeleteFile.IsEnabled = false;
+                
             });
         }
 
@@ -121,6 +124,8 @@ namespace LidarrCompanion
                 btn_Settings.IsEnabled = true;
                 btn_ClearProposed.IsEnabled = true;
                 btn_NotForImport.IsEnabled = true;
+                btn_UnlinkFile.IsEnabled = true;
+                btn_DeleteFile.IsEnabled = true;
             });
         }
 
@@ -130,9 +135,7 @@ namespace LidarrCompanion
             settingsform.ShowDialog();
         }
 
- 
-
-        
+  
 
         private async void btn_CheckOllama_Click(object sender, RoutedEventArgs e)
         {
@@ -160,12 +163,6 @@ namespace LidarrCompanion
                 ClearBusy();
             }
         }
-
-        
-
-        
-
-        
 
 
 

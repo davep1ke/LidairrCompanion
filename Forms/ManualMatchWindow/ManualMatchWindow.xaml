@@ -14,10 +14,10 @@
 
         <TextBlock x:Name="txt_Context" Grid.Row="0" TextWrapping="Wrap" Margin="0,0,0,8" />
 
-        <DockPanel Grid.Row="1" Margin="0,0,0,8">
-            <TextBox x:Name="txt_Search" Width="260" HorizontalAlignment="Left" VerticalAlignment="Center" DockPanel.Dock="Left" />
-            <Button x:Name="btn_SearchExternal" Content="Search External" Width="110" Margin="8,0,0,0" Click="btn_SearchExternal_Click" />
-            <Button x:Name="btn_Reset" Content="Reset" Width="60" Margin="8,0,0,0" Click="btn_Reset_Click" />
+        <DockPanel Grid.Row="1" Margin="0,0,0,0">
+            <TextBox x:Name="txt_Search" Width="210" HorizontalAlignment="Left" VerticalAlignment="Center" DockPanel.Dock="Left" />
+            <Button x:Name="btn_SearchExternal" Content="Search External" Width="100" Margin="0,0,0,0" Click="btn_SearchExternal_Click" DockPanel.Dock="Right"/>
+            <Button x:Name="btn_Reset" Content="Reset" Width="60" Margin="0,0,0,0" Click="btn_Reset_Click" DockPanel.Dock="Right" />
         </DockPanel>
 
         <ListBox x:Name="list_Artists" Grid.Row="2" DisplayMemberPath="DisplayName" SelectionMode="Single" />

@@ -15,11 +15,42 @@ namespace LidarrCompanion
 {
     public partial class MainWindow
     {
+       
+        // Generic creator for frontend proposals (NotForImport, Defer, Unlink, Delete)
+        private void CreateProposal(LidarrCompanion.Helpers.ProposalActionType kind)
+        {
+            try
+            {
+                var currentQueueRecord = list_QueueRecords.SelectedItem as LidarrQueueRecord;
+               
+                // Otherwise operate on selected files
+                var selectedFiles = list_Files_in_Release.SelectedItems.Cast<object>().OfType<LidarrManualImportFile>().ToList();
+                if (selectedFiles == null || selectedFiles.Count == 0)
+                {
+                    MessageBox.Show("Select one or more files from 'Unimported Release Files' first.", "No file selected", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                else
+                {
+
+                    foreach (var selFile in selectedFiles)
+                    {
+                        // Delegate creation to the service. Pass null for selectedPa and the selected file.
+                        _proposalService.CreateProposedAction(kind, selFile, currentQueueRecord, _proposedActions, _manualImportFiles, this._queueRecords);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Operation failed: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
         private async void btn_AI_SearchMatch_Click(object sender, RoutedEventArgs e)
         {
             if (_isBusy) return;
 
-            if (list_CurrentFiles.SelectedItem is not LidarrQueueRecord selectedRecord)
+            if (list_QueueRecords.SelectedItem is not LidarrQueueRecord selectedRecord)
             {
                 MessageBox.Show("Select a release from the list first.", "No selection", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
@@ -31,7 +62,7 @@ namespace LidarrCompanion
                 return;
             }
 
-            var candidateFiles = _manualImportFiles.Where(f => !f.IsAssigned && !_assignedFileIds.Contains(f.Id)).ToList();
+            var candidateFiles = _manualImportFiles.Where(f => (f.ProposedActionType != ProposalActionType.Import) && !_assignedFileIds.Contains(f.Id)).ToList();
             if (!candidateFiles.Any())
             {
                 MessageBox.Show("No unassigned files available to match.", "Nothing to match", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -71,8 +102,6 @@ namespace LidarrCompanion
         }
 
 
-
-
         private async void btn_MarkMatch_Click(object sender, RoutedEventArgs e)
         {
             // If multiple files selected, this action is not supported
@@ -95,7 +124,7 @@ namespace LidarrCompanion
             }
 
             // Prevent re-assignment
-            if (selectedFile.IsAssigned || _assignedFileIds.Contains(selectedFile.Id))
+            if ((selectedFile.ProposedActionType == ProposalActionType.Import) || _assignedFileIds.Contains(selectedFile.Id))
             {
                 MessageBox.Show("This file has already been assigned.", "Already assigned", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
@@ -115,14 +144,8 @@ namespace LidarrCompanion
                     return;
             }
 
-
-
-            // Highlight both lists by selecting the items (ListView selection visual)
-            list_Files_in_Release.SelectedItem = selectedFile;
-            list_Artist_Releases.SelectedItem = selectedTrack;
-
             // Build proposed action (originalRelease: try selected queue record title if available)
-            var selectedQueueRecord = list_CurrentFiles.SelectedItem as LidarrQueueRecord;
+            var selectedQueueRecord = list_QueueRecords.SelectedItem as LidarrQueueRecord;
             var originalRelease = selectedQueueRecord?.Title ?? Path.GetFileName(selectedFile.Path) ?? string.Empty;
 
             // compute path fallback: prefer release path, then album path, then artist path + release (fallback to empty)
@@ -138,20 +161,21 @@ namespace LidarrCompanion
                 fallbackPath = artistPath;
             }
 
-            // Remove any existing proposal for this file (e.g. a previous move) before adding the assignment
-            var existingForSelected = _proposedActions.FirstOrDefault(p => p.FileId == selectedFile.Id);
-            if (existingForSelected != null) _proposedActions.Remove(existingForSelected);
-
             // Use ProposalService to create and add proposals
             _proposalService.CreateManualAssignment(selectedFile, selectedTrack, selectedQueueRecord, _artists, _proposedActions, _manualImportFiles, _assignedFileIds, _assignedTrackIds);
 
-            // Mark assigned
-            selectedFile.IsAssigned = true;
+            // Mark assigned (file-level ProposedActionType is set by proposal service)
+            selectedFile.ProposedActionType = ProposalActionType.Import;
             selectedTrack.IsAssigned = true;
             _assignedFileIds.Add(selectedFile.Id);
             _assignedTrackIds.Add(selectedTrack.TrackId);
-        }
 
+            // Recompute scores because assignment state changed
+            if (cmb_SortMode.SelectedItem is ComboBoxItem item)
+            {
+                ApplyArtistReleasesSort(item.Content?.ToString() ?? string.Empty);
+            }
+        }
         
 
         private async Task LoadArtistReleasesAsync(string artistName)
@@ -229,18 +253,23 @@ namespace LidarrCompanion
             switch (mode)
             {
                 case "by Release":
+                    // reset scores
+                    foreach (var it in _artistReleaseTracks) it.Score = 0.0;
                     items = items.OrderBy(i => i.Release).ThenBy(i => i.Track);
                     break;
                 case "by Track Num":
+                    foreach (var it in _artistReleaseTracks) it.Score = 0.0;
                     items = items.OrderBy(i => MatchingService.ParseTrackNumber(i.Track)).ThenBy(i => i.Track);
                     break;
                 case "by Track Name":
+                    foreach (var it in _artistReleaseTracks) it.Score = 0.0;
                     items = items.OrderBy(i => MatchingService.StripTrackNumberPrefix(i.Track)).ThenBy(i => i.Track);
                     break;
                 case "by Best":
                     // If nothing selected in files list, fallback to release sort
                     if (!(list_Files_in_Release.SelectedItem is LidarrManualImportFile selectedFile))
                     {
+                        foreach (var it in _artistReleaseTracks) it.Score = 0.0;
                         items = items.OrderBy(i => i.Release).ThenBy(i => i.Track);
                         break;
                     }
@@ -248,24 +277,33 @@ namespace LidarrCompanion
                     var selFileName = selectedFile.Name;
                     var selFileId = selectedFile.Id;
 
+                    // attempt to read selected record's matched artist for better scoring
+                    var selectedQueueRecord = list_QueueRecords.SelectedItem as LidarrQueueRecord;
+                    var selectedArtistName = selectedQueueRecord?.MatchedArtist ?? string.Empty;
+
                     // read boost from settings (default10)
                     int releaseBoost = AppSettings.Current.GetTyped<int>(SettingKey.ReleaseBoost);
                     if (releaseBoost <= 0) releaseBoost = 10;
 
-                    // Determine whether there are other assigned files/tracks in a release
-                    // We'll boost a release's tracks by configured boost if there are other assignments in that release
-                    items = items.OrderByDescending(i =>
+                    // Compute score per-track and assign to the Score property then order by Score desc
+                    foreach (var i in _artistReleaseTracks)
                     {
-                        double baseScore = MatchingService.ComputeMatchScore(selFileName, i);
+                        double baseScore = MatchingService.ComputeMatchScore(selFileName, i, selectedArtistName);
 
                         // Do not apply release-level boost if the track already has a file or the selected file is already assigned
-                        if (i.HasFile || selectedFile.IsAssigned)
-                            return baseScore;
+                        if (i.HasFile || selectedFile.ProposedActionType == ProposalActionType.Import)
+                        {
+                            i.Score = baseScore;
+                            continue;
+                        }
 
                         // If the selected file is already part of a proposed action for this release, do not boost
                         var selectedFileAlreadyMappedToThisRelease = _proposedActions.Any(a => a.FileId == selFileId && a.AlbumReleaseId == i.ReleaseId);
                         if (selectedFileAlreadyMappedToThisRelease)
-                            return baseScore;
+                        {
+                            i.Score = baseScore;
+                            continue;
+                        }
 
                         // Check if any other track in the same release is assigned (either via IsAssigned on track rows or via assigned ID set or proposed actions with different file)
                         bool otherAssignedInRelease = _artistReleaseTracks.Any(t => t.ReleaseId == i.ReleaseId && t.IsAssigned && t.TrackId != i.TrackId)
@@ -273,12 +311,15 @@ namespace LidarrCompanion
                             || _proposedActions.Any(a => a.AlbumReleaseId == i.ReleaseId && a.FileId != selFileId);
 
                         if (otherAssignedInRelease)
-                            return baseScore + releaseBoost;
+                            i.Score = baseScore + releaseBoost;
+                        else
+                            i.Score = baseScore;
+                    }
 
-                        return baseScore;
-                    });
+                    items = items.OrderByDescending(i => i.Score).ThenBy(i => i.Release).ThenBy(i => i.Track);
                     break;
                 default:
+                    foreach (var it in _artistReleaseTracks) it.Score = 0.0;
                     items = items.OrderBy(i => i.Release).ThenBy(i => i.Track);
                     break;
             }
@@ -318,14 +359,14 @@ namespace LidarrCompanion
                 // Include releases that have proposed actions targeting that release (and not move-to-not-selected / not-for-import)
                 foreach (var pa in _proposedActions)
                 {
-                    if (!pa.IsMoveToNotSelected && !pa.IsNotForImport && pa.AlbumReleaseId != 0)
+                    if (pa.Action == LidarrCompanion.Helpers.ProposalActionType.Import && pa.AlbumReleaseId != 0)
                         releasesWithAssigned.Add(pa.AlbumReleaseId);
                 }
 
                 // Now set the flag on each track: true when the release has assigned tracks but this track itself is not assigned
                 foreach (var tr in _artistReleaseTracks)
                 {
-                    tr.IsReleaseHasAssigned = releasesWithAssigned.Contains(tr.ReleaseId) && !tr.IsAssigned;
+                    tr.ReleaseHasOtherAssigned = releasesWithAssigned.Contains(tr.ReleaseId) && !tr.IsAssigned;
                 }
             }
             catch
@@ -336,70 +377,27 @@ namespace LidarrCompanion
 
         private void btn_NotForImport_Click(object sender, RoutedEventArgs e)
         {
-            try
-            {
-                // If a proposed action is selected, operate on it
-                var pa = list_Proposed_Actions.SelectedItem as ProposedAction;
-                var currentQueueRecord = list_CurrentFiles.SelectedItem as LidarrQueueRecord;
-
-                if (pa != null)
-                {
-                    _proposalService.MarkNotForImport(pa, null, _proposedActions, _manualImportFiles, _queueRecords, currentQueueRecord);
-                    return;
-                }
-
-                // Otherwise operate on selected files (allow multiple)
-                var selectedFiles = list_Files_in_Release.SelectedItems.Cast<object>().OfType<LidarrManualImportFile>().ToList();
-                if (selectedFiles == null || selectedFiles.Count == 0)
-                {
-                    MessageBox.Show("Select one or more files from 'Unimported Release Files' first.", "No file selected", MessageBoxButton.OK, MessageBoxImage.Information);
-                    return;
-                }
-
-                foreach (var selFile in selectedFiles)
-                {
-                    _proposalService.MarkNotForImport(null, selFile, _proposedActions, _manualImportFiles, _queueRecords, currentQueueRecord);
-                }
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Operation failed: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
+            CreateProposal(ProposalActionType.NotForImport);
         }
 
         // Defer import handler: create a move-to-defer proposal or mark selected ProposedAction deferred
         private void btn_DeferImport_Click(object sender, RoutedEventArgs e)
         {
-            try
-            {
-                // If a proposed action is selected, operate on it
-                var pa = list_Proposed_Actions.SelectedItem as ProposedAction;
-                var currentQueueRecord = list_CurrentFiles.SelectedItem as LidarrQueueRecord;
-
-                if (pa != null)
-                {
-                    _proposalService.MarkDeferred(pa, null, _proposedActions, _manualImportFiles, _queueRecords, currentQueueRecord);
-                    return;
-                }
-
-                // Otherwise operate on selected files (allow multiple)
-                var selectedFiles = list_Files_in_Release.SelectedItems.Cast<object>().OfType<LidarrManualImportFile>().ToList();
-                if (selectedFiles == null || selectedFiles.Count == 0)
-                {
-                    MessageBox.Show("Select one or more files from 'Unimported Release Files' first.", "No file selected", MessageBoxButton.OK, MessageBoxImage.Information);
-                    return;
-                }
-
-                foreach (var selFile in selectedFiles)
-                {
-                    _proposalService.MarkDeferred(null, selFile, _proposedActions, _manualImportFiles, _queueRecords, currentQueueRecord);
-                }
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Defer operation failed: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
+            CreateProposal(ProposalActionType.Defer);
         }
+
+
+        private void btn_UnlinkFile_Click(object sender, RoutedEventArgs e)
+        {
+            CreateProposal(ProposalActionType.Unlink);
+        }
+
+        private void btn_DeleteFile_Click(object sender, RoutedEventArgs e)
+        {
+            CreateProposal(ProposalActionType.Delete);
+        }
+
+
 
         private void btn_PlayTrack_Click(object sender, RoutedEventArgs e)
         {
@@ -482,10 +480,10 @@ namespace LidarrCompanion
             }
 
             // If no file is selected, prefer the currently selected item in the CurrentFiles list (queue record)
-            if (list_CurrentFiles.SelectedItem != null)
+            if (list_QueueRecords.SelectedItem != null)
             {
                 // Try to resolve OutputPath property via dynamic cast to expected type (LidarrQueueRecord)
-                var queueItem = list_CurrentFiles.SelectedItem as dynamic;
+                var queueItem = list_QueueRecords.SelectedItem as dynamic;
                 string? outputPath = null;
                 try
                 {
@@ -570,6 +568,8 @@ namespace LidarrCompanion
                 // ignore
             }
         }
+
+
 
 
 

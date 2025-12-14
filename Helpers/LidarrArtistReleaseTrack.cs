@@ -15,8 +15,9 @@ namespace LidarrCompanion.Helpers
         private string _albumPath = string.Empty;
         private string _releasePath = string.Empty;
         private bool _isAssigned = false;
-        private bool _isReleaseHasAssigned = false; // new
+        private bool _releaseHasOtherAssigned = false; // new
         private string _albumType = string.Empty; // new
+        private double _score = 0.0; // new
 
         // Release display text (ReleaseName - Country/Format)
         public string Release
@@ -81,10 +82,10 @@ namespace LidarrCompanion.Helpers
         }
 
         // New: whether another track in the same release has been assigned/matched (used to highlight sibling tracks)
-        public bool IsReleaseHasAssigned
+        public bool ReleaseHasOtherAssigned
         {
-            get => _isReleaseHasAssigned;
-            set => SetProperty(ref _isReleaseHasAssigned, value);
+            get => _releaseHasOtherAssigned;
+            set => SetProperty(ref _releaseHasOtherAssigned, value);
         }
 
         // New: album type copied from album metadata (e.g., "album", "single").
@@ -92,6 +93,13 @@ namespace LidarrCompanion.Helpers
         {
             get => _albumType;
             set => SetProperty(ref _albumType, value);
+        }
+
+        // New: computed score to display for UI when matching against a selected file
+        public double Score
+        {
+            get => _score;
+            set => SetProperty(ref _score, value);
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;

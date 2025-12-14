@@ -8,5 +8,7 @@ namespace LidarrCompanion.Helpers
         public string Title { get; set; } = string.Empty;
         public int Duration { get; set; }
         public bool HasFile { get; set; }
+        // Optional: ID of the file associated with this track (when Lidarr returns it)
+        public int TrackFileId { get; set; }
     }
 }

@@ -17,7 +17,7 @@ namespace LidarrCompanion
 
         public void InitializeUnimportedSection()
         {
-            list_CurrentFiles.ItemsSource = _queueRecords;
+            list_QueueRecords.ItemsSource = _queueRecords;
 
             // Re-wire command bindings to explicitly reference the implementations in this partial
             CommandBindings.Add(new System.Windows.Input.CommandBinding(CmdGetNextFiles, (s, e) => OnGetFilesFromLidarrClicked(s, (RoutedEventArgs)e)));
@@ -77,9 +77,9 @@ namespace LidarrCompanion
             }
         }
 
-        private async void list_CurrentFiles_SelectionChanged_Handler(object sender, SelectionChangedEventArgs e)
+        private async void list_QueueRecords_SelectionChanged_Handler(object sender, SelectionChangedEventArgs e)
         {
-            if (list_CurrentFiles.SelectedItem is LidarrQueueRecord selectedRecord)
+            if (list_QueueRecords.SelectedItem is LidarrQueueRecord selectedRecord)
             {
                 if (_isBusy) return;
 
@@ -92,6 +92,26 @@ namespace LidarrCompanion
                     _manualImportFiles.Clear();
                     foreach (var file in files)
                         _manualImportFiles.Add(file);
+
+                    // Ensure file-level UI highlights reflect any existing proposed actions
+                    try
+                    {
+                        foreach (var mf in _manualImportFiles)
+                        {
+                            // clear defaults
+                            mf.ProposedActionType = null;
+
+                            var pa = _proposedActions.FirstOrDefault(p => p.FileId == mf.Id);
+                            if (pa != null)
+                            {
+                                mf.ProposedActionType = pa.Action;
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // ignore highlighting errors
+                    }
 
                     if (!string.IsNullOrWhiteSpace(selectedRecord.MatchedArtist))
                     {
@@ -130,7 +150,7 @@ namespace LidarrCompanion
         {
             if (_isBusy) return;
 
-            if (list_CurrentFiles.SelectedItem is not LidarrQueueRecord selectedRecord)
+            if (list_QueueRecords.SelectedItem is not LidarrQueueRecord selectedRecord)
             {
                 MessageBox.Show("Select a release from the list first.", "No selection", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
@@ -204,7 +224,7 @@ namespace LidarrCompanion
         // Wrapper methods with original names expected by XAML - forward to implementations
         private void btn_GetFilesFromLidarr_Click(object sender, RoutedEventArgs e) => OnGetFilesFromLidarrClicked(sender, e);
         private void btn_autoReleaseMatchToArtist_Click(object sender, RoutedEventArgs e) => OnAutoMatchClicked(sender, e);
-        private void list_CurrentFiles_SelectionChanged(object sender, SelectionChangedEventArgs e) => list_CurrentFiles_SelectionChanged_Handler(sender, e);
+        private void list_QueueRecords_SelectionChanged(object sender, SelectionChangedEventArgs e) => list_QueueRecords_SelectionChanged_Handler(sender, e);
         private void btn_manualReleaseMatchToArtist_Click(object sender, RoutedEventArgs e) => OnManualMatchClicked(sender, e);
         private void btn_GetArtists_Click(object sender, RoutedEventArgs e) => OnGetArtistsClicked(sender, e);
 

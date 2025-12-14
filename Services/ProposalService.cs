@@ -2,156 +2,61 @@ using LidarrCompanion.Helpers;
 using LidarrCompanion.Models;
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Linq;
+using System;
 
 namespace LidarrCompanion.Services
 {
     public class ProposalService
     {
-        // Mark a proposed action or selected file as NotForImport / move-to-not-selected
-        public void MarkNotForImport(
-        ProposedAction? selectedPa,
-        LidarrManualImportFile? selectedFile,
-        ObservableCollection<ProposedAction> proposedActions,
-        ObservableCollection<LidarrManualImportFile> manualImportFiles,
-        ObservableCollection<LidarrQueueRecord> queueRecords,
-        LidarrQueueRecord? currentQueueRecord)
-        {
-            // If a proposed action is selected, mark it as NotForImport and flag underlying file
-            if (selectedPa != null)
-            {
-                // Remove any other proposals for this file (imports or move/defer)
-                var existingForFile = proposedActions.Where(p => p.FileId == selectedPa.FileId && p != selectedPa).ToList();
-                foreach (var ex in existingForFile)
-                {
-                    proposedActions.Remove(ex);
-                }
-
-                selectedPa.IsNotForImport = true;
-                selectedPa.IsMoveToNotSelected = false;
-                selectedPa.ActionType = "Not For Import";
-
-                var fileRow = manualImportFiles.FirstOrDefault(f => f.Id == selectedPa.FileId);
-                if (fileRow != null)
-                {
-                    fileRow.IsMarkedNotSelected = true;
-                }
-
-                // Mark the parent queue record (if any) as having a not-selected file
-                LidarrQueueRecord? queueRecord = currentQueueRecord;
-                if (queueRecord == null && selectedPa != null)
-                {
-                    queueRecord = queueRecords.FirstOrDefault(q => string.Equals(q.Title, selectedPa.OriginalRelease, StringComparison.OrdinalIgnoreCase) || string.Equals(q.DownloadId, selectedPa.DownloadId, StringComparison.OrdinalIgnoreCase));
-                }
-                if (queueRecord != null)
-                {
-                    queueRecord.HasNotSelectedMarked = true;
-                }
-
-                return;
-            }
-
-            // Otherwise if a file row is selected, create a move-to-not-selected proposed action
-            if (selectedFile != null)
-            {
-                // Remove any existing proposals for this file (import/defer/move)
-                var existing = proposedActions.Where(p => p.FileId == selectedFile.Id).ToList();
-                foreach (var e in existing) proposedActions.Remove(e);
-
-                var notSelectedRoot = AppSettings.GetValue(SettingKey.NotSelectedPath);
-                var originalRelease = currentQueueRecord is LidarrQueueRecord qr ? qr.Title : Path.GetFileName(selectedFile.Path) ?? string.Empty;
-
-                var movePa = new ProposedAction
-                {
-                    OriginalFileName = selectedFile.Name,
-                    OriginalRelease = originalRelease,
-                    FileId = selectedFile.Id,
-                    Path = selectedFile.Path,
-                    IsMoveToNotSelected = true,
-                    MoveDestinationPath = string.IsNullOrWhiteSpace(notSelectedRoot) ? string.Empty : Path.Combine(notSelectedRoot, originalRelease),
-                    ActionType = "Move to Not Import"
-                };
-
-                proposedActions.Add(movePa);
-                selectedFile.IsMarkedNotSelected = true;
-
-                // mark queue record as having not-selected file
-                var qr2 = currentQueueRecord ?? queueRecords.FirstOrDefault(q => string.Equals(q.Title, originalRelease, StringComparison.OrdinalIgnoreCase));
-                if (qr2 != null) qr2.HasNotSelectedMarked = true;
-            }
-        }
-
-        // New: Mark proposed action or selected file as deferred (move to DeferDestinationPath)
-        public void MarkDeferred(
-            ProposedAction? selectedPa,
-            LidarrManualImportFile? selectedFile,
+        // New unified method to create a proposal action for NotForImport, Defer, Unlink, Delete
+        public void CreateProposedAction(
+            LidarrCompanion.Helpers.ProposalActionType actionType,
+            //What we are linking
+            LidarrManualImportFile selectedFile,
+            LidarrQueueRecord? currentQueueRecord,
+            //entries
             ObservableCollection<ProposedAction> proposedActions,
             ObservableCollection<LidarrManualImportFile> manualImportFiles,
-            ObservableCollection<LidarrQueueRecord> queueRecords,
-            LidarrQueueRecord? currentQueueRecord)
+            ObservableCollection<LidarrQueueRecord> queueRecords
+            )
         {
-            // If a proposed action is selected, mark it as deferred and flag underlying file
-            if (selectedPa != null)
-            {
-                // Remove any other proposals for this file (imports or not-for-import)
-                var existingForFile = proposedActions.Where(p => p.FileId == selectedPa.FileId && p != selectedPa).ToList();
-                foreach (var ex in existingForFile)
-                {
-                    proposedActions.Remove(ex);
-                }
+                        
+            // Remove any other proposals for this file (imports or related moves)
+            var existingForFile = proposedActions.Where(p => p.FileId == selectedFile.Id).ToList();
+            foreach (var ex in existingForFile) {
+                // clear any file-level proposed action markers for the removed proposals
+                var fileForEx = manualImportFiles.FirstOrDefault(f => f.Id == ex.FileId);
+                if (fileForEx != null) fileForEx.ProposedActionType = null;
+                proposedActions.Remove(ex);
+            }
+             
 
-                selectedPa.IsNotForImport = false;
-                selectedPa.IsMoveToNotSelected = false; // treat Defer as separate action type (actionType string used)
-                selectedPa.ActionType = "Defer";
-
-                var fileRow = manualImportFiles.FirstOrDefault(f => f.Id == selectedPa.FileId);
-                if (fileRow != null)
-                {
-                    // Use IsMarkedNotSelected for visual flag reuse; keep it true so UI indicates it's been handled
-                    fileRow.IsMarkedNotSelected = true;
-                }
-
-                // Mark the parent queue record (if any) as having a deferred file
-                LidarrQueueRecord? queueRecord = currentQueueRecord;
-                if (queueRecord == null && selectedPa != null)
-                {
-                    queueRecord = queueRecords.FirstOrDefault(q => string.Equals(q.Title, selectedPa.OriginalRelease, StringComparison.OrdinalIgnoreCase) || string.Equals(q.DownloadId, selectedPa.DownloadId, StringComparison.OrdinalIgnoreCase));
-                }
-                if (queueRecord != null)
-                {
-                    queueRecord.HasNotSelectedMarked = true; // reuse flag
-                }
-
-                return;
+            // Remove any existing proposals for this file
+            var existing = proposedActions.Where(p => p.FileId == selectedFile.Id).ToList();
+            foreach (var e in existing) {
+                var fileForE = manualImportFiles.FirstOrDefault(f => f.Id == e.FileId);
+                if (fileForE != null) fileForE.ProposedActionType = null;
+                proposedActions.Remove(e);
             }
 
-            // Otherwise if a file row is selected, create a move-to-defer proposed action
-            if (selectedFile != null)
+            var originalRelease = currentQueueRecord is LidarrQueueRecord qr ? qr.Title : Path.GetFileName(selectedFile.Path) ?? string.Empty;
+
+            var pa = new ProposedAction
             {
-                // Remove any existing proposals for this file (import/not-for-import/move)
-                var existing = proposedActions.Where(p => p.FileId == selectedFile.Id).ToList();
-                foreach (var e in existing) proposedActions.Remove(e);
+                OriginalFileName = selectedFile.Name,
+                OriginalRelease = originalRelease,
+                FileId = selectedFile.Id,
+                Path = selectedFile.Path,
+                DownloadId = currentQueueRecord?.DownloadId ?? string.Empty,
+                Action = actionType
+            };
 
-                var deferRoot = AppSettings.GetValue(SettingKey.DeferDestinationPath);
-                var originalRelease = currentQueueRecord is LidarrQueueRecord qr ? qr.Title : Path.GetFileName(selectedFile.Path) ?? string.Empty;
-
-                var movePa = new ProposedAction
-                {
-                    OriginalFileName = selectedFile.Name,
-                    OriginalRelease = originalRelease,
-                    FileId = selectedFile.Id,
-                    Path = selectedFile.Path,
-                    IsMoveToNotSelected = true, // reuse move flag so ImportService will move before import
-                    MoveDestinationPath = string.IsNullOrWhiteSpace(deferRoot) ? string.Empty : Path.Combine(deferRoot, originalRelease),
-                    ActionType = "Defer"
-                };
-
-                proposedActions.Add(movePa);
-                selectedFile.IsMarkedNotSelected = true;
-
-                // mark queue record as having deferred file
-                var qr2 = currentQueueRecord ?? queueRecords.FirstOrDefault(q => string.Equals(q.Title, originalRelease, StringComparison.OrdinalIgnoreCase));
-                if (qr2 != null) qr2.HasNotSelectedMarked = true;
-            }
+            proposedActions.Add(pa);
+            selectedFile.ProposedActionType = actionType;
+            return;
+            
+            
         }
 
         // Create a manual assignment proposal and sibling move-to-not-selected proposals
@@ -168,7 +73,7 @@ namespace LidarrCompanion.Services
             if (selectedFile == null || selectedTrack == null) throw new ArgumentNullException();
 
             // Prevent re-assignment
-            if (selectedFile.IsAssigned || assignedFileIds.Contains(selectedFile.Id))
+            if ((selectedFile.ProposedActionType == ProposalActionType.Import) || assignedFileIds.Contains(selectedFile.Id))
                 throw new InvalidOperationException("This file has already been assigned.");
             if (selectedTrack.IsAssigned || assignedTrackIds.Contains(selectedTrack.TrackId))
                 throw new InvalidOperationException("This track has already been assigned.");
@@ -190,13 +95,13 @@ namespace LidarrCompanion.Services
                 Path = selectedFile.Path,
                 DownloadId = selectedQueueRecord?.DownloadId ?? string.Empty,
                 Quality = selectedFile.Quality,
-                ActionType = "Import"
+                Action = LidarrCompanion.Helpers.ProposalActionType.Import
             };
 
-            // Mark assigned bookkeeping
+            // Mark assigned bookkeeping: mark file as Import at file-level and track as assigned
             try
             {
-                selectedFile.IsAssigned = true;
+                selectedFile.ProposedActionType = ProposalActionType.Import;
                 selectedTrack.IsAssigned = true;
                 assignedFileIds.Add(selectedFile.Id);
                 assignedTrackIds.Add(selectedTrack.TrackId);
@@ -232,12 +137,10 @@ namespace LidarrCompanion.Services
                                 OriginalRelease = originalRelease,
                                 FileId = file.Id,
                                 Path = file.Path,
-                                IsMoveToNotSelected = true,
-                                MoveDestinationPath = string.IsNullOrWhiteSpace(notSelectedRoot) ? string.Empty : Path.Combine(notSelectedRoot, originalRelease),
-                                ActionType = "Move to Not Import"
+                                Action = LidarrCompanion.Helpers.ProposalActionType.NotForImport
                             };
                             proposedActions.Add(pa);
-                            file.IsMarkedNotSelected = true;
+                            file.ProposedActionType = ProposalActionType.NotForImport;
                         }
                     }
                 }
@@ -293,15 +196,18 @@ namespace LidarrCompanion.Services
                 var matchedFile = manualImportFiles.FirstOrDefault(f => f.Id == p.FileId);
                 if (matchedFile != null) p.Quality = matchedFile.Quality;
 
-                var existingMove = proposedActions.FirstOrDefault(x => x.FileId == p.FileId && x.IsMoveToNotSelected);
+                var existingMove = proposedActions.FirstOrDefault(x => x.FileId == p.FileId && x.Action == LidarrCompanion.Helpers.ProposalActionType.NotForImport);
                 if (existingMove != null)
                 {
                     var fileRow = manualImportFiles.FirstOrDefault(f => f.Id == existingMove.FileId);
-                    if (fileRow != null) fileRow.IsMarkedNotSelected = false;
+                    if (fileRow != null) fileRow.ProposedActionType = null;
                     proposedActions.Remove(existingMove);
                 }
 
-                p.ActionType = "Import";
+                p.Action = LidarrCompanion.Helpers.ProposalActionType.Import;
+
+                // Mark the manual file's ProposedActionType so the files list can reflect the proposal (Import shows transparent)
+                if (matchedFile != null) matchedFile.ProposedActionType = p.Action;
 
                 proposedActions.Add(p);
             }

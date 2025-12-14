@@ -21,7 +21,6 @@ namespace LidarrCompanion.Helpers
         private string _downloadId;
         private ReleaseMatchType _match = ReleaseMatchType.None;
         private string _matchedArtist = string.Empty;
-        private bool _hasNotSelectedMarked = false;
 
         public string Title
         {
@@ -59,13 +58,6 @@ namespace LidarrCompanion.Helpers
         {
             get => _matchedArtist;
             set => SetProperty(ref _matchedArtist, value);
-        }
-
-        // New: when files under this release are moved to NotSelectedPath, mark the queue row
-        public bool HasNotSelectedMarked
-        {
-            get => _hasNotSelectedMarked;
-            set => SetProperty(ref _hasNotSelectedMarked, value);
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;

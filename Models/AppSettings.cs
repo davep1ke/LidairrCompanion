@@ -50,6 +50,11 @@ namespace LidarrCompanion.Models
         LidarrImportPath,
         [Setting(typeof(string), "Local mapping for Lidarr import path [Local]", "Import")]
         LidarrImportPathLocal,
+        // Library root (where Lidarr stores music) and its local mapping
+        [Setting(typeof(string), "Library root path used by Lidarr [Server]", "Import")]
+        LidarrLibraryPath,
+        [Setting(typeof(string), "Local mapping for Lidarr library root [Local]", "Import")]
+        LidarrLibraryPathLocal,
 
         //Ollama
         [Setting(typeof(string), "URL for Ollama server", "Ollama")]

@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Windows.Media;
 
 namespace LidarrCompanion.Helpers
 {
@@ -27,19 +28,9 @@ namespace LidarrCompanion.Helpers
         // Quality information for the file (quality + revision) as returned by Lidarr
         public LidarrManualFileQuality? Quality { get; set; }
 
-        // New: indicate this proposed action is a move to NotSelectedPath rather than import
-        private bool _isMoveToNotSelected;
-        public bool IsMoveToNotSelected { get => _isMoveToNotSelected; set { if (_isMoveToNotSelected != value) { _isMoveToNotSelected = value; OnPropertyChanged(nameof(IsMoveToNotSelected)); } } }
-        private string _moveDestinationPath = string.Empty;
-        public string MoveDestinationPath { get => _moveDestinationPath; set { if (_moveDestinationPath != value) { _moveDestinationPath = value; OnPropertyChanged(nameof(MoveDestinationPath)); } } }
-
-        // New: explicitly mark a file as NotForImport (user requested). Different UI highlight.
-        private bool _isNotForImport;
-        public bool IsNotForImport { get => _isNotForImport; set { if (_isNotForImport != value) { _isNotForImport = value; OnPropertyChanged(nameof(IsNotForImport)); } } }
-
-        // New: human-readable action type for UI (e.g. "Import" or "Move to Not Import")
-        private string _actionType = "Import";
-        public string ActionType { get => _actionType; set { if (_actionType != value) { _actionType = value; OnPropertyChanged(nameof(ActionType)); } } }
+        // New: unified action type for this proposed action
+        private ProposalActionType _action = ProposalActionType.Import;
+        public ProposalActionType Action { get => _action; set { if (_action != value) { _action = value; OnPropertyChanged(nameof(Action)); } } }
 
         // New: import status and error message
         private string _importStatus = string.Empty;

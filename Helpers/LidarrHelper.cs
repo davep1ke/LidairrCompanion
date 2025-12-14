@@ -6,8 +6,6 @@ namespace LidarrCompanion.Helpers
 {
     public class LidarrHelper
     {
-        private readonly string _baseUrl;
-
         private readonly HttpClient _client;
 
         public LidarrHelper()
@@ -247,7 +245,8 @@ namespace LidarrCompanion.Helpers
                         TrackNumber = t.TryGetProperty("trackNumber", out var tn) ? tn.GetString() ?? string.Empty : string.Empty,
                         Title = t.TryGetProperty("title", out var tt) ? tt.GetString() ?? string.Empty : string.Empty,
                         Duration = t.TryGetProperty("duration", out var dur) && dur.ValueKind == JsonValueKind.Number ? dur.GetInt32() : 0,
-                        HasFile = t.TryGetProperty("hasFile", out var hf) && hf.ValueKind == JsonValueKind.True
+                        HasFile = t.TryGetProperty("hasFile", out var hf) && hf.ValueKind == JsonValueKind.True,
+                        TrackFileId = t.TryGetProperty("trackFileId", out var fid) && fid.ValueKind == JsonValueKind.Number ? fid.GetInt32() : 0
                     };
 
                     results.Add(track);
@@ -255,6 +254,29 @@ namespace LidarrCompanion.Helpers
             }
 
             return results;
+        }
+
+        // Get a track file record by its ID
+        public async Task<LidarrTrackFile?> GetTrackFileAsync(int trackFileId)
+        {
+            if (trackFileId <= 0) return null;
+            var relative = $"api/v1/trackfile/{trackFileId}";
+            try
+            {
+                var json = await CallLidarrAsync(HttpMethod.Get, relative).ConfigureAwait(false);
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                var tf = new LidarrTrackFile();
+                if (root.TryGetProperty("id", out var idp) && idp.ValueKind == JsonValueKind.Number)
+                    tf.Id = idp.GetInt32();
+                if (root.TryGetProperty("path", out var pathp) && pathp.ValueKind == JsonValueKind.String)
+                    tf.Path = pathp.GetString() ?? string.Empty;
+                return tf;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         // Lookup artists by term and return raw JSON objects as strings

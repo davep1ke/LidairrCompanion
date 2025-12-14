@@ -107,8 +107,10 @@ namespace LidarrCompanion
         private readonly System.Collections.Generic.Dictionary<string, (string friendly, SettingKey[] keys)> _boxInfo = new System.Collections.Generic.Dictionary<string, (string, SettingKey[])>(StringComparer.OrdinalIgnoreCase)
         {
             { "Box_LidarrURL", ("Lidarr URL", new[]{ SettingKey.LidarrURL, SettingKey.LidarrAPIKey }) },
+            // Releases box highlights import settings only
             { "Box_LidarrReleases", ("Lidarr Releases", new[]{ SettingKey.LidarrImportPath, SettingKey.LidarrImportPathLocal }) },
-            { "Box_LidarrImport", ("Lidarr Import", new[]{ SettingKey.LidarrImportPath, SettingKey.LidarrImportPathLocal }) },
+            // Rename import box to represent the library root
+            { "Box_LidarrImport", ("Lidarr Library", new[]{ SettingKey.LidarrLibraryPath, SettingKey.LidarrLibraryPathLocal }) },
             { "Box_NotSelected", ("Not-Selected", new[]{ SettingKey.NotSelectedPath }) },
             { "Box_Defer", ("Defer", new[]{ SettingKey.DeferDestinationPath, SettingKey.CopyDeferredFiles, SettingKey.BackupDeferredFiles }) },
             { "Box_BackupRootFolder", ("Backup Root", new[]{ SettingKey.BackupRootFolder, SettingKey.BackupFilesBeforeImport }) },
@@ -232,6 +234,10 @@ namespace LidarrCompanion
             var copyNotSelected = AppSettings.Current.GetTyped<bool>(SettingKey.CopyNotSelectedFiles);
             var backupNotSelected = AppSettings.Current.GetTyped<bool>(SettingKey.BackupNotSelectedFiles);
 
+            // Declare libraryPath and libraryPathLocal variables
+            var libraryPath = AppSettings.GetValue(SettingKey.LidarrLibraryPath);
+            var libraryPathLocal = AppSettings.GetValue(SettingKey.LidarrLibraryPathLocal);
+
             // Determine brushes for each box
             var brushLidarr = (!string.IsNullOrWhiteSpace(lidarrUrl) && !string.IsNullOrWhiteSpace(lidarrApiKey)) ? BrushGreen : BrushRed;
 
@@ -251,6 +257,30 @@ namespace LidarrCompanion
             else
             {
                 brushBackup = BrushAmber;
+            }
+
+            // Determine brush for Releases (based on import path settings only)
+            Brush brushReleases;
+            if (string.IsNullOrWhiteSpace(importPath) || string.IsNullOrWhiteSpace(importPathLocal))
+            {
+                brushReleases = BrushRed;
+            }
+            else
+            {
+                var importLocalOk = Directory.Exists(importPathLocal);
+                brushReleases = importLocalOk ? BrushGreen : BrushAmber;
+            }
+
+            // Determine brush for Library (based on library path settings)
+            Brush brushLibrary;
+            if (string.IsNullOrWhiteSpace(libraryPath) || string.IsNullOrWhiteSpace(libraryPathLocal))
+            {
+                brushLibrary = BrushRed;
+            }
+            else
+            {
+                var libraryLocalOk = Directory.Exists(libraryPathLocal);
+                brushLibrary = libraryLocalOk ? BrushGreen : BrushAmber;
             }
 
             Brush brushImport;
@@ -308,14 +338,15 @@ namespace LidarrCompanion
             // Apply brushes to boxes
             Box_LidarrURL.Background = brushLidarr;
             Box_BackupRootFolder.Background = brushBackup;
-            Box_LidarrImport.Background = brushImport;
+            // Box_LidarrImport represents the library root now
+            Box_LidarrImport.Background = brushLibrary;
             Box_NotSelected.Background = brushNotSelected;
             Box_CopyImportedFiles.Background = brushCopy;
             Box_Defer.Background = brushDeferPath;
             var boxReleases = this.FindName("Box_LidarrReleases") as Border;
             if (boxReleases != null)
             {
-                boxReleases.Background = brushImport;
+                boxReleases.Background = brushReleases;
             }
 
             // Apply arrow colors - use FindName for new elements
@@ -324,17 +355,17 @@ namespace LidarrCompanion
             var lineReleasesNotSelected = this.FindName("Line_Releases_NotSelected") as Line;
             var lineReleasesDefer = this.FindName("Line_Releases_Defer") as Line;
 
-            if (lineLidarrReleases != null) lineLidarrReleases.Stroke = MergeBrushes(brushLidarr, brushImport);
-            if (lineReleasesImport != null) lineReleasesImport.Stroke = MergeBrushes(brushImport, brushImport);
-            if (lineReleasesNotSelected != null) lineReleasesNotSelected.Stroke = MergeBrushes(brushImport, brushNotSelected);
-            if (lineReleasesDefer != null) lineReleasesDefer.Stroke = MergeBrushes(brushImport, brushDeferPath);
+            if (lineLidarrReleases != null) lineLidarrReleases.Stroke = MergeBrushes(brushLidarr, brushReleases);
+            if (lineReleasesImport != null) lineReleasesImport.Stroke = MergeBrushes(brushReleases, brushLibrary);
+            if (lineReleasesNotSelected != null) lineReleasesNotSelected.Stroke = MergeBrushes(brushReleases, brushNotSelected);
+            if (lineReleasesDefer != null) lineReleasesDefer.Stroke = MergeBrushes(brushReleases, brushDeferPath);
 
             // Line_LidarrURL_Backup: now connects Import -> Backup (legacy name)
             var lineLidarrUrlBackup = this.FindName("Line_LidarrURL_Backup") as Line;
-            if (lineLidarrUrlBackup != null) lineLidarrUrlBackup.Stroke = MergeBrushes(brushImport, brushBackup);
+            if (lineLidarrUrlBackup != null) lineLidarrUrlBackup.Stroke = MergeBrushes(brushLibrary, brushBackup);
 
             var lineImportCopy = this.FindName("Line_Import_Copy") as Line;
-            if (lineImportCopy != null) lineImportCopy.Stroke = !copyImported ? BrushGray : MergeBrushes(brushImport, brushCopy);
+            if (lineImportCopy != null) lineImportCopy.Stroke = !copyImported ? BrushGray : MergeBrushes(brushLibrary, brushCopy);
             var lineNotSelectedCopy = this.FindName("Line_NotSelected_Copy") as Line;
             if (lineNotSelectedCopy != null) lineNotSelectedCopy.Stroke = !copyNotSelected ? BrushGray : MergeBrushes(brushNotSelected, brushCopy);
 
