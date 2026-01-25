@@ -19,271 +19,167 @@ namespace LidarrCompanion.Services
 
     public class ImportService
     {
-        // Resolve server-local mapping shared helper. The pathKey indicates which configured path
-        // we are matching against (only LidarrImportPath requires mapping). If serverToLocal is true,
-        // rewrite server import paths to local mapping; if false, rewrite local mapping to server path.
-        public static string ResolveMappedPath(string filePath, SettingKey pathKey, bool serverToLocal)
-        {
-            if (string.IsNullOrWhiteSpace(filePath)) return string.Empty;
+        private const int MaxTrackFetchAttempts = 20;
+        private const int TrackFetchDelayMs = 3000;
 
-            // Support mapping for import path and library root path
-            string serverPath = string.Empty;
-            string localMapping = string.Empty;
+        #region File Operations
 
-            if (pathKey == SettingKey.LidarrImportPath)
-            {
-                serverPath = AppSettings.GetValue(SettingKey.LidarrImportPath);
-                localMapping = AppSettings.GetValue(SettingKey.LidarrImportPathLocal);
-            }
-            else if (pathKey == SettingKey.LidarrLibraryPath)
-            {
-                serverPath = AppSettings.GetValue(SettingKey.LidarrLibraryPath);
-                localMapping = AppSettings.GetValue(SettingKey.LidarrLibraryPathLocal);
-            }
-            else
-            {
-                // For other keys, return original path unchanged
-                return filePath;
-            }
-
-            if (string.IsNullOrWhiteSpace(serverPath) || string.IsNullOrWhiteSpace(localMapping))
-                return filePath;
-
-            try
-            {
-                var normServer = serverPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                var normLocal = localMapping.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-
-                if (serverToLocal)
-                {
-                    if (filePath.StartsWith(normServer, StringComparison.OrdinalIgnoreCase))
-                    {
-                        var relative = filePath.Substring(normServer.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar, '/','\\');
-                        // Normalize separators to local OS style
-                        if (!string.IsNullOrEmpty(relative))
-                        {
-                            relative = relative.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
-                        }
-                        return string.IsNullOrEmpty(relative) ? normLocal : Path.Combine(normLocal, relative);
-                    }
-                }
-                else
-                {
-                    if (filePath.StartsWith(normLocal, StringComparison.OrdinalIgnoreCase))
-                    {
-                        var relative = filePath.Substring(normLocal.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar, '/','\\');
-                        // Determine server separator style from configured server path (prefer '/' if present)
-                        var serverSep = normServer.Contains('/') ? '/' : '\\';
-                        if (!string.IsNullOrEmpty(relative))
-                        {
-                            relative = relative.Replace('\\', serverSep).Replace('/', serverSep);
-                        }
-                        // Build server-style path using the chosen separator
-                        if (string.IsNullOrEmpty(relative))
-                            return normServer;
-                        return normServer + serverSep + relative;
-                    }
-                }
-            }
-            catch
-            {
-                // ignore and fall back to returning original path
-            }
-
-            return filePath;
-        }
-
-        // Helper: centralise copying a found source file to the configured secondary copy root.
-        // Returns true when copy was not required or succeeded; returns false when copy was required but source not found or copy failed.
         private bool CopyFileToSecondary(string sourceFilePath, ProposedAction action, SettingKey copyFlagKey)
         {
             try
             {
                 var copyEnabled = AppSettings.Current.GetTyped<bool>(copyFlagKey);
                 var copyDestRoot = AppSettings.GetValue(SettingKey.CopyImportedFilesPath);
+                
                 if (!copyEnabled || string.IsNullOrWhiteSpace(copyDestRoot))
-                    return true; // nothing to do
-
-             
-                // If it's an existing file, use it
-                if (!File.Exists(sourceFilePath))
                 {
-                    throw new FileNotFoundException(); 
+                    Logger.Log("Secondary copy not enabled or path not configured", LogSeverity.Verbose, new { CopyEnabled = copyEnabled, DestRoot = copyDestRoot });
+                    return true;
                 }
 
+                if (!File.Exists(sourceFilePath))
+                {
+                    Logger.Log($"Source file not found for secondary copy: {sourceFilePath}", LogSeverity.Medium, new { Source = sourceFilePath }, filePath: sourceFilePath);
+                    throw new FileNotFoundException();
+                }
 
                 var destFile = Path.Combine(copyDestRoot, Path.GetFileName(sourceFilePath));
-                var destDir = Path.GetDirectoryName(destFile);
-                
-                Directory.CreateDirectory(destDir); 
-                
+                Directory.CreateDirectory(Path.GetDirectoryName(destFile)!);
 
                 File.Copy(sourceFilePath, destFile, true);
+
+                var success = File.Exists(destFile);
+                Logger.Log(success ? $"Secondary copy successful: {destFile}" : $"Secondary copy verification failed: {destFile}", 
+                    success ? LogSeverity.Low : LogSeverity.High, 
+                    new { Source = sourceFilePath, Destination = destFile },
+                    filePath: sourceFilePath);
                 
-                // Verify that the copy exists
-                return File.Exists(destFile);
+                return success;
             }
-            catch
+            catch (Exception ex)
             {
-                // TryCopyFile will show any MessageBox; indicate failure
+                Logger.Log($"Secondary copy failed: {ex.Message}", LogSeverity.High, new { Source = sourceFilePath, Error = ex.Message }, filePath: sourceFilePath);
                 return false;
             }
         }
 
+        private void ValidateAndBackupFile(string filePath, string releaseKey, string destFile)
+        {
+            var resolvedPath = FileOperationsHelper.ResolveMappedPath(filePath, SettingKey.LidarrImportPath, true);
+            if (string.IsNullOrWhiteSpace(resolvedPath)) resolvedPath = filePath;
 
+            if (!FileOperationsHelper.ValidateIsFile(resolvedPath, out string errorMessage))
+            {
+                Logger.Log($"File validation failed: {errorMessage}", LogSeverity.High, new { FilePath = resolvedPath, Release = releaseKey }, filePath: resolvedPath);
+                throw new InvalidOperationException($"Proposed action for release '{releaseKey}': {errorMessage}");
+            }
 
-        /// <summary>
-        /// Move a file to the destination folder. Attempts copy+delete first, falls back to File.Move.
-        /// Shows MessageBox on failure and rethrows the underlying exception.
-        /// Returns the final destination path on success.
-        /// </summary>
-        private string MoveFileToDestination(string sourcePath, string destDir)
+            if (File.Exists(destFile))
+            {
+                var srcInfo = new FileInfo(resolvedPath);
+                var destInfo = new FileInfo(destFile);
+                if (srcInfo.Length == destInfo.Length)
+                {
+                Logger.Log($"File already backed up (size match): {destFile}", LogSeverity.Verbose, new { Source = resolvedPath, Destination = destFile }, filePath: resolvedPath);
+                    return;
+                }
+            }
+
+            PerformBackup(resolvedPath, destFile);
+        }
+
+        private void PerformBackup(string resolvedPath, string destFile)
         {
             try
             {
-                Directory.CreateDirectory(destDir);
+                Logger.Log($"Backing up file: {resolvedPath} -> {destFile}", LogSeverity.Verbose, new { Source = resolvedPath, Destination = destFile }, filePath: resolvedPath);
+                File.Copy(resolvedPath, destFile, true);
+
+                if (!File.Exists(destFile))
+                    throw new IOException($"Backup failed: destination file not created: '{destFile}'.");
+
+                var srcInfo = new FileInfo(resolvedPath);
+                var destInfo = new FileInfo(destFile);
+                
+                if (srcInfo.Length != destInfo.Length)
+                    throw new IOException($"Backup verification failed for '{resolvedPath}'. Source size: {srcInfo.Length}, Destination size: {destInfo.Length}.");
+
+                Logger.Log($"File backed up successfully: {destFile}", LogSeverity.Verbose, new { Source = resolvedPath, Destination = destFile }, filePath: resolvedPath);
             }
-            catch
+            catch (Exception ex)
             {
-                // Ignore directory creation failures here — proceed and let move/copy operations surface errors if directory truly unavailable.
-            }
-            var destPath = Path.Combine(destDir, Path.GetFileName(sourcePath));
-
-            // If destination already exists, prefer to keep it if identical.
-            if (File.Exists(destPath))
-            {
-                try
-                {
-                    var srcInfo = new FileInfo(sourcePath);
-                    var destInfo = new FileInfo(destPath);
-
-                    // If sizes match, assume file already present - delete source and return
-                    if (srcInfo.Exists && destInfo.Exists && srcInfo.Length == destInfo.Length)
-                    {
-                        try { File.Delete(sourcePath); } catch { /* ignore delete failure */ }
-                        return destPath;
-                    }
-
-                    // Sizes differ - try to overwrite by copying and deleting the source
-                    File.Copy(sourcePath, destPath, true);
-                    File.Delete(sourcePath);
-
-                    // Verify copy
-                    destInfo = new FileInfo(destPath);
-                    if (srcInfo.Length != destInfo.Length)
-                        throw new IOException($"Verification failed after overwrite for '{sourcePath}' to '{destPath}'.");
-
-                    return destPath;
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show($"Failed to move/overwrite file from '{sourcePath}' to '{destPath}': {ex.Message}", "Move Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                    throw;
-                }
-            }
-
-            // Destination does not exist - try a direct move first
-            try
-            {
-                File.Move(sourcePath, destPath);
-                return destPath;
-            }
-            catch
-            {
-                // If move fails, fallback to copy+delete
-                try
-                {
-                    File.Copy(sourcePath, destPath, true);
-                    File.Delete(sourcePath);
-
-                    var srcInfo = new FileInfo(sourcePath);
-                    var destInfo = new FileInfo(destPath);
-                    // If source no longer exists, we can't compare sizes; just return destPath
-                    if (!srcInfo.Exists || srcInfo.Length == destInfo.Length)
-                        return destPath;
-
-                    throw new IOException($"Verification failed after copy for '{sourcePath}' to '{destPath}'.");
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show($"Failed to move file from '{sourcePath}' to '{destPath}': {ex.Message}", "Move Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                    throw;
-                }
+                Logger.Log($"Backup failed: {ex.Message}", LogSeverity.Critical, new { Source = resolvedPath, Destination = destFile, Error = ex.Message }, filePath: resolvedPath);
+                MessageBox.Show($"Backup failed for '{resolvedPath}' to '{destFile}': {ex.Message}", "Backup Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                throw;
             }
         }
+
+        /*private void TryDeleteEmptyFolder(string sourceFolder)
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(sourceFolder) && Directory.Exists(sourceFolder) && !Directory.EnumerateFileSystemEntries(sourceFolder).Any())
+                {
+                    Directory.Delete(sourceFolder);
+                    Logger.Log($"Deleted empty source folder: {sourceFolder}", LogSeverity.Low, new { Folder = sourceFolder });
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"Failed to delete empty source folder (non-fatal): {ex.Message}", LogSeverity.Low, new { Folder = sourceFolder, Error = ex.Message });
+            }
+        }*/
+
+        #endregion
+
+        #region Backup Operations
 
         private void BackupProposedActionFiles(List<ProposedAction> actionsSnapshot)
         {
-            // Read backup root from settings (caller ensures configured before calling)
+            Logger.Log($"Starting backup of {actionsSnapshot.Count} proposed action files", LogSeverity.Medium, new { ActionCount = actionsSnapshot.Count });
+
             var backupRoot = AppSettings.GetValue(SettingKey.BackupRootFolder);
-            if (string.IsNullOrWhiteSpace(backupRoot)) return;
-
-            var groupsForBackup = actionsSnapshot.GroupBy(a => a.OriginalRelease);
-            foreach (var group in groupsForBackup)
+            if (string.IsNullOrWhiteSpace(backupRoot))
             {
-                var releaseKey = group.Key ?? string.Empty;
-                var filePaths = group.Select(a => a.Path).ToList();
-                if (filePaths == null || filePaths.Count == 0)
-                    throw new InvalidOperationException($"No file paths found for proposed actions in release '{releaseKey}'.");
+                Logger.Log("Backup root folder not configured", LogSeverity.Low);
+                return;
+            }
 
-                var samplePath = filePaths.FirstOrDefault() ?? string.Empty;
-                var defaultFolderName = string.IsNullOrWhiteSpace(releaseKey) ? (Path.GetFileName(samplePath) ?? "release") : releaseKey;
-                var destFolder = Path.Combine(backupRoot, defaultFolderName);
-                Directory.CreateDirectory(destFolder);
+            foreach (var group in actionsSnapshot.GroupBy(a => a.OriginalRelease))
+            {
+                BackupReleaseGroup(group, backupRoot);
+            }
 
-                foreach (var filePath in filePaths)
-                {
-                    if (string.IsNullOrWhiteSpace(filePath))
-                        throw new InvalidOperationException($"Proposed action contains an empty Path for release '{releaseKey}'.");
+            Logger.Log($"Backup completed successfully for all files", LogSeverity.Medium);
+        }
 
-                    // Translate remote/server path to local mapped path if configured
-                    var resolvedPath = ResolveMappedPath(filePath, SettingKey.LidarrImportPath, true);
+        private void BackupReleaseGroup(IGrouping<string?, ProposedAction> group, string backupRoot)
+        {
+            var releaseKey = group.Key ?? string.Empty;
+            var filePaths = group.Select(a => a.Path).ToList();
 
-                    // If ResolveMappedPath returned empty, fall back to original
-                    if (string.IsNullOrWhiteSpace(resolvedPath)) resolvedPath = filePath;
+            if (filePaths.Count == 0)
+                throw new InvalidOperationException($"No file paths found for proposed actions in release '{releaseKey}'.");
 
-                    if (Directory.Exists(resolvedPath) || resolvedPath.EndsWith(Path.DirectorySeparatorChar) || resolvedPath.EndsWith(Path.AltDirectorySeparatorChar))
-                        throw new InvalidOperationException($"Proposed action Path '{resolvedPath}' for release '{releaseKey}' is a directory, expected a file path.");
+            Logger.Log($"Backing up {filePaths.Count} files for release: {releaseKey}", LogSeverity.Low, new { Release = releaseKey, FileCount = filePaths.Count });
 
-                    if (!Path.HasExtension(resolvedPath))
-                    {
-                        if (!File.Exists(resolvedPath))
-                            throw new InvalidOperationException($"Proposed action Path '{resolvedPath}' for release '{releaseKey}' does not point to an existing file.");
-                    }
+            var defaultFolderName = string.IsNullOrWhiteSpace(releaseKey) ? (Path.GetFileName(filePaths.FirstOrDefault()) ?? "release") : releaseKey;
+            var destFolder = Path.Combine(backupRoot, defaultFolderName);
+            Directory.CreateDirectory(destFolder);
 
-                    if (!File.Exists(resolvedPath))
-                        throw new InvalidOperationException($"Source file not found: '{resolvedPath}' for release '{releaseKey}'.");
+            foreach (var filePath in filePaths)
+            {
+                if (string.IsNullOrWhiteSpace(filePath))
+                    throw new InvalidOperationException($"Proposed action contains an empty Path for release '{releaseKey}'.");
 
-                    var destFile = Path.Combine(destFolder, Path.GetFileName(resolvedPath));
-
-                    if (File.Exists(destFile))
-                    {
-                        var srcInfoCheck = new FileInfo(resolvedPath);
-                        var destInfoCheck = new FileInfo(destFile);
-                        if (srcInfoCheck.Length == destInfoCheck.Length)
-                            continue; // already backed up
-                    }
-
-                    try
-                    {
-                        File.Copy(resolvedPath, destFile, true);
-
-                        if (!File.Exists(destFile))
-                            throw new IOException($"Backup failed: destination file not created: '{destFile}'.");
-
-                        var srcInfo = new FileInfo(resolvedPath);
-                        var destInfo = new FileInfo(destFile);
-                        if (srcInfo.Length != destInfo.Length)
-                            throw new IOException($"Backup verification failed for '{resolvedPath}'. Source size: {srcInfo.Length}, Destination size: {destInfo.Length}.");
-                    }
-                    catch (Exception ex)
-                    {
-                        MessageBox.Show($"Backup failed for '{resolvedPath}' to '{destFile}': {ex.Message}", "Backup Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                        throw;
-                    }
-                }
+                var destFile = Path.Combine(destFolder, Path.GetFileName(filePath));
+                ValidateAndBackupFile(filePath, releaseKey, destFile);
             }
         }
+
+        #endregion
+
+        #region Main Import Flow
 
         public async Task<ImportResult> ImportAsync(List<ProposedAction> actionsSnapshot,
             ObservableCollection<LidarrManualImportFile> manualImportFiles,
@@ -292,498 +188,680 @@ namespace LidarrCompanion.Services
             HashSet<int> assignedFileIds,
             HashSet<int> assignedTrackIds)
         {
+            Logger.Log($"ImportAsync started with {actionsSnapshot?.Count ?? 0} actions", LogSeverity.Medium, new { ActionCount = actionsSnapshot?.Count ?? 0 });
+
             var result = new ImportResult();
             if (actionsSnapshot == null || actionsSnapshot.Count == 0)
+            {
+                Logger.Log("No actions to import", LogSeverity.Low);
                 return result;
+            }
+
+            InitializeActionStatuses(actionsSnapshot);
 
             var lidarr = new LidarrHelper();
             var backupRoot = AppSettings.GetValue(SettingKey.BackupRootFolder);
-            var notSelectedRoot = AppSettings.GetValue(SettingKey.NotSelectedPath);
-            var deferRoot = AppSettings.GetValue(SettingKey.DeferDestinationPath);
-
-            // Determine whether general backup/copy features are enabled
+            var importRootSetting = AppSettings.GetValue(SettingKey.LidarrImportPath);
             var backupBeforeImport = AppSettings.Current.GetTyped<bool>(SettingKey.BackupFilesBeforeImport);
 
-            // Initialize statuses
+            Logger.Log("Import configuration loaded", LogSeverity.Low, new { BackupRoot = backupRoot, BackupEnabled = backupBeforeImport });
+
+            // Phase 1: Backup
+            if (!string.IsNullOrWhiteSpace(backupRoot) && backupBeforeImport)
+            {
+                if (!TryBackupFiles(actionsSnapshot, result))
+                    return result;
+            }
+
+            // Phase 2: Process actions
+            actionsSnapshot = await ProcessAllActions(actionsSnapshot, manualImportFiles, proposedActions, artistReleaseTracks, result, importRootSetting, lidarr);
+
+            // Cleanup
+            ClearAssignmentTrackers(assignedFileIds, assignedTrackIds, artistReleaseTracks);
+
+            Logger.Log($"ImportAsync completed - Success: {result.SuccessCount}, Failed: {result.FailCount}", LogSeverity.Medium, new { Success = result.SuccessCount, Failed = result.FailCount });
+            return result;
+        }
+
+        private void InitializeActionStatuses(List<ProposedAction> actionsSnapshot)
+        {
             foreach (var a in actionsSnapshot)
             {
                 a.ImportStatus = string.Empty;
                 a.ErrorMessage = string.Empty;
             }
+        }
 
-            // BACKUP - only if backup root configured AND overall backup enabled
-            if (!string.IsNullOrWhiteSpace(backupRoot) && backupBeforeImport)
+        private bool TryBackupFiles(List<ProposedAction> actionsSnapshot, ImportResult result)
+        {
+            try
+            {
+                BackupProposedActionFiles(actionsSnapshot);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"Backup phase failed: {ex.Message}", LogSeverity.Critical, ex);
+                foreach (var a in actionsSnapshot)
+                {
+                    a.ImportStatus = "Failed";
+                    a.ErrorMessage = "Backup failed: " + ex.Message;
+                }
+                MessageBox.Show($"Backup failed: {ex.Message}", "Backup Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return false;
+            }
+        }
+
+        private async Task<List<ProposedAction>> ProcessAllActions(
+            List<ProposedAction> actionsSnapshot,
+            ObservableCollection<LidarrManualImportFile> manualImportFiles,
+            ObservableCollection<ProposedAction> proposedActions,
+            ObservableCollection<LidarrArtistReleaseTrack> artistReleaseTracks,
+            ImportResult result,
+            string importRootSetting,
+            LidarrHelper lidarr)
+        {
+            // Pre-process: Check cover art requirements
+            if (!await ProcessCoverArtRequirements(actionsSnapshot, result))
+            {
+                Logger.Log("Cover art pre-processing aborted by user", LogSeverity.Medium);
+                return new List<ProposedAction>();
+            }
+
+            // Unlink actions
+            actionsSnapshot = ProcessUnlinkActions(actionsSnapshot, manualImportFiles, proposedActions, importRootSetting, result);
+            if (actionsSnapshot == null) return new List<ProposedAction>();
+
+            // Dynamic destination actions (includes legacy mapping)
+            actionsSnapshot = ProcessDestinationActions(actionsSnapshot, manualImportFiles, proposedActions, result);
+            if (actionsSnapshot == null) return new List<ProposedAction>();
+
+            // Delete actions
+            actionsSnapshot = ProcessDeleteActions(actionsSnapshot, manualImportFiles, proposedActions, result);
+            if (actionsSnapshot == null) return new List<ProposedAction>();
+
+            // Import actions
+            await ProcessImportActions(lidarr, actionsSnapshot, manualImportFiles, proposedActions, artistReleaseTracks, result);
+
+            return actionsSnapshot;
+        }
+
+        private void ClearAssignmentTrackers(HashSet<int> assignedFileIds, HashSet<int> assignedTrackIds, ObservableCollection<LidarrArtistReleaseTrack> artistReleaseTracks)
+        {
+            assignedFileIds.Clear();
+            assignedTrackIds.Clear();
+            foreach (var track in artistReleaseTracks)
+                track.IsAssigned = false;
+        }
+
+        #endregion
+
+        #region Unlink Processing
+
+        private List<ProposedAction>? ProcessUnlinkActions(
+            List<ProposedAction> actionsSnapshot,
+            ObservableCollection<LidarrManualImportFile> manualImportFiles,
+            ObservableCollection<ProposedAction> proposedActions,
+            string importRootSetting,
+            ImportResult result)
+        {
+            if (string.IsNullOrWhiteSpace(importRootSetting))
+                return actionsSnapshot;
+
+            var unlinkActions = actionsSnapshot.Where(a => a.Action == ProposalActionType.Unlink).ToList();
+            if (unlinkActions.Count == 0)
+                return actionsSnapshot;
+
+            Logger.Log($"Processing {unlinkActions.Count} Unlink actions", LogSeverity.Medium, new { Count = unlinkActions.Count });
+
+            foreach (var ua in unlinkActions)
             {
                 try
                 {
-                    BackupProposedActionFiles(actionsSnapshot);
+                    Logger.Log($"Processing Unlink action for: {ua.OriginalFileName}", LogSeverity.Low, new { FileName = ua.OriginalFileName, FileId = ua.FileId }, filePath: ua.Path);
+                    ProcessMoveAction(ua, manualImportFiles, proposedActions, importRootSetting, null);
+                    ua.ImportStatus = "Success";
                 }
                 catch (Exception ex)
                 {
-                    // set error on all actions and abort
-                    foreach (var a in actionsSnapshot)
-                    {
-                        a.ImportStatus = "Failed";
-                        a.ErrorMessage = "Backup failed: " + ex.Message;
-                    }
-                    MessageBox.Show($"Backup failed: {ex.Message}", "Backup Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                    return result;
+                    Logger.Log($"Unlink action failed: {ex.Message}", LogSeverity.High, new { FileName = ua.OriginalFileName, Error = ex.Message });
+                    ua.ImportStatus = "Failed";
+                    ua.ErrorMessage = ex.Message;
+                    MessageBox.Show($"Unlink move failed for '{ua.OriginalFileName}': {ex.Message}", "Move Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return null;
                 }
             }
 
+            return actionsSnapshot.Where(a => a.Action != ProposalActionType.Unlink).ToList();
+        }
 
+        #endregion
 
-            // UNLINK - move files from subfolders into import root (no secondary copy)
-            var importRootSetting = AppSettings.GetValue(SettingKey.LidarrImportPath);
-            if (!string.IsNullOrWhiteSpace(importRootSetting))
+        #region Destination Processing
+
+        private List<ProposedAction>? ProcessDestinationActions(
+            List<ProposedAction> actionsSnapshot,
+            ObservableCollection<LidarrManualImportFile> manualImportFiles,
+            ObservableCollection<ProposedAction> proposedActions,
+            ImportResult result)
+        {
+            var destinations = AppSettings.Current.ImportDestinations ?? new List<ImportDestination>();
+
+            // Map legacy actions to destinations
+            MapLegacyActions(actionsSnapshot, destinations);
+
+            // Process all MoveToDestination actions
+            var moveActions = actionsSnapshot.Where(a => a.Action == ProposalActionType.MoveToDestination).ToList();
+            foreach (var destGroup in moveActions.GroupBy(a => a.DestinationName))
             {
-                var unlinkActions = actionsSnapshot.Where(a => a.Action == ProposalActionType.Unlink).ToList();
-                foreach (var ua in unlinkActions)
-                {
-                    try
-                    {
-                        // ProcessMoveAction will resolve import root and never copy for Unlink actions
-                        ProcessMoveAction(ua, manualImportFiles, proposedActions, importRootSetting);
-                        ua.ImportStatus = "Success";
-                    }
-                    catch (Exception ex)
-                    {
-                        ua.ImportStatus = "Failed";
-                        ua.ErrorMessage = ex.Message;
-                        MessageBox.Show($"Unlink move failed for '{ua.OriginalFileName}': {ex.Message}", "Move Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                        return result;
-                    }
-                }
-
-                // Remove moved actions from snapshot so they aren't processed further
-                actionsSnapshot = actionsSnapshot.Where(a => a.Action != ProposalActionType.Unlink).ToList();
+                if (!ProcessDestinationGroup(destGroup, destinations, manualImportFiles, proposedActions, result))
+                    return null;
             }
 
-        // MOVE Not Selected
-        if (!string.IsNullOrWhiteSpace(notSelectedRoot))
-         {
-             var moveActions = actionsSnapshot.Where(a => a.Action == ProposalActionType.NotForImport).ToList();
-             foreach (var ma in moveActions)
-             {
-                 try
-                 {
-                     ProcessMoveAction(ma, manualImportFiles, proposedActions, notSelectedRoot);
-                     ma.ImportStatus = "Success";
-                 }
-                 catch (Exception ex)
-                 {
-                     ma.ImportStatus = "Failed";
-                     ma.ErrorMessage = ex.Message;
-                     MessageBox.Show($"Move to NotSelected failed for '{ma.OriginalFileName}': {ex.Message}", "Move Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                     return result;
-                 }
-             }
+            return actionsSnapshot.Where(a => a.Action != ProposalActionType.MoveToDestination &&
+                                             a.Action != ProposalActionType.NotForImport &&
+                                             a.Action != ProposalActionType.Defer).ToList();
+        }
 
-             // Remove moved actions from snapshot so they aren't processed further
-             actionsSnapshot = actionsSnapshot.Where(a => a.Action != ProposalActionType.NotForImport).ToList();
-         }
+        private void MapLegacyActions(List<ProposedAction> actionsSnapshot, List<ImportDestination> destinations)
+        {
+            var legacyNotSelected = actionsSnapshot.Where(a => a.Action == ProposalActionType.NotForImport).ToList();
+            var legacyDefer = actionsSnapshot.Where(a => a.Action == ProposalActionType.Defer).ToList();
 
-         // MOVE Deferred
-         if (!string.IsNullOrWhiteSpace(deferRoot))
-         {
-             var deferActions = actionsSnapshot.Where(a => a.Action == ProposalActionType.Defer).ToList();
-             foreach (var da in deferActions)
-             {
-                 try
-                 {
-                     ProcessMoveAction(da, manualImportFiles, proposedActions, deferRoot);
-                     da.ImportStatus = "Success";
-                 }
-                 catch (Exception ex)
-                 {
-                     da.ImportStatus = "Failed";
-                     da.ErrorMessage = ex.Message;
-                     MessageBox.Show($"Defer move failed for '{da.OriginalFileName}': {ex.Message}", "Move Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                     return result;
-                 }
-             }
+            if (!legacyNotSelected.Any() && !legacyDefer.Any())
+                return;
 
-             actionsSnapshot = actionsSnapshot.Where(a => a.Action != ProposalActionType.Defer).ToList();
-         }
+            Logger.Log($"Mapping legacy actions: NotForImport={legacyNotSelected.Count}, Defer={legacyDefer.Count}", LogSeverity.Medium);
 
-         // DELETE and IMPORT handled by dedicated helpers
-         var postDeleteActions = ProcessDeleteActions(actionsSnapshot, manualImportFiles, proposedActions, result);
-         if (postDeleteActions == null)
-             return result; // abort on delete failure
+            MapLegacyActionType(legacyNotSelected, destinations.FirstOrDefault(), "NotForImport");
+            MapLegacyActionType(legacyDefer, destinations.Skip(1).FirstOrDefault(), "Defer");
+        }
 
-         actionsSnapshot = postDeleteActions;
+        private void MapLegacyActionType(List<ProposedAction> actions, ImportDestination? destination, string actionName)
+        {
+            if (!actions.Any()) return;
 
-         await ProcessImportActions(lidarr, actionsSnapshot, manualImportFiles, proposedActions, artistReleaseTracks, result);
+            if (destination != null)
+            {
+                Logger.Log($"Mapping {actions.Count} {actionName} actions to destination: {destination.Name}", LogSeverity.Low);
+                foreach (var action in actions)
+                {
+                    action.Action = ProposalActionType.MoveToDestination;
+                    action.DestinationName = destination.Name;
+                }
+            }
+            else
+            {
+                Logger.Log($"No destination configured for {actionName} actions", LogSeverity.High);
+                foreach (var action in actions)
+                {
+                    action.ImportStatus = "Failed";
+                    action.ErrorMessage = $"No destination configured for {actionName}. Please add a destination in Settings.";
+                }
+            }
+        }
 
+        private bool ProcessDestinationGroup(
+            IGrouping<string?, ProposedAction> destGroup,
+            List<ImportDestination> destinations,
+            ObservableCollection<LidarrManualImportFile> manualImportFiles,
+            ObservableCollection<ProposedAction> proposedActions,
+            ImportResult result)
+        {
+            var destName = destGroup.Key;
+            var dest = destinations.FirstOrDefault(d => d.Name == destName);
 
-         // Clear assigned trackers for successful imports/moves
-         assignedFileIds.Clear();
-         assignedTrackIds.Clear();
-         foreach (var track in artistReleaseTracks)
-             track.IsAssigned = false;
+            if (dest == null || string.IsNullOrWhiteSpace(dest.DestinationPath))
+            {
+                Logger.Log($"Destination not found or path not configured: {destName}", LogSeverity.High, new { DestinationName = destName });
+                foreach (var action in destGroup)
+                {
+                    action.ImportStatus = "Failed";
+                    action.ErrorMessage = $"Destination '{destName}' not configured";
+                }
+                return true;
+            }
 
-         return result;
-     }
+            Logger.Log($"Processing {destGroup.Count()} actions for destination: {destName}", LogSeverity.Medium, new { DestinationName = destName, Count = destGroup.Count() });
 
-     /// <summary>
-     /// Shared processing for moving a proposed action file to a destination root.
-     /// Behavior (secondary copy and destination computation) is determined from the ProposedAction.Action.
-     /// - Import: checks CopyImportedFiles setting and appends release folder.
-     /// - NotForImport: checks CopyNotSelectedFiles setting and appends release folder.
-     /// - Defer: checks CopyDeferredFiles setting and appends release folder.
-     /// - Unlink: never copies to secondary and always moves file into the configured LidarrImportPath (no release folder).
-     /// </summary>
-     private void ProcessMoveAction(ProposedAction action,
-         ObservableCollection<LidarrManualImportFile> manualImportFiles,
-         ObservableCollection<ProposedAction> proposedActions,
-         string rootDestination)
-     {
-         // Try to find the manual import file row; if not present, fall back to using the ProposedAction.Path
-         var fileRow = manualImportFiles.FirstOrDefault(f => f.Id == action.FileId);
+            foreach (var action in destGroup)
+            {
+                try
+                {
+                    ProcessMoveAction(action, manualImportFiles, proposedActions, dest.DestinationPath, dest);
+                    action.ImportStatus = "Success";
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"Move to destination failed: {ex.Message}", LogSeverity.High, new { FileName = action.OriginalFileName, Destination = destName, Error = ex.Message });
+                    action.ImportStatus = "Failed";
+                    action.ErrorMessage = ex.Message;
+                    MessageBox.Show($"Move to '{destName}' failed for '{action.OriginalFileName}': {ex.Message}", "Move Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return false;
+                }
+            }
 
-         // Resolve source path: prefer fileRow.Path when available, otherwise use action.Path
-         string sourcePath = string.Empty;
-         if (fileRow != null)
-         {
-             sourcePath = ResolveMappedPath(fileRow.Path, SettingKey.LidarrImportPath, true);
-         }
-         else
-         {
-             sourcePath = ResolveMappedPath(action.Path, SettingKey.LidarrImportPath, true);
-         }
+            return true;
+        }
 
-         if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
-             throw new IOException($"Source file for action not found: '{sourcePath}'");
+        #endregion
 
-         var sourceFolder = Path.GetDirectoryName(sourcePath) ?? string.Empty;
+        #region Move Action Processing
 
-         // Determine copy behavior and destination
-         bool doCopy = false;
-         SettingKey copyKey = SettingKey.CopyImportedFiles; // default
-         bool appendReleaseFolder = true;
-         string destRoot = rootDestination ?? string.Empty;
+        private void ProcessMoveAction(ProposedAction action,
+            ObservableCollection<LidarrManualImportFile> manualImportFiles,
+            ObservableCollection<ProposedAction> proposedActions,
+            string rootDestination,
+            ImportDestination? destination)
+        {
+            Logger.Log($"ProcessMoveAction started for {action.Action}", LogSeverity.Verbose, new { Action = action.Action.ToString(), FileId = action.FileId, FileName = action.OriginalFileName });
 
-         switch (action.Action)
-         {
-             case ProposalActionType.Unlink:
-                 // Never copy; move to configured import root folder (mapped)
-                 doCopy = false;
-                 appendReleaseFolder = false;
-                 var importRoot = AppSettings.GetValue(SettingKey.LidarrImportPath);
-                 destRoot = ResolveMappedPath(importRoot, SettingKey.LidarrImportPath, true);
-                 break;
-             case ProposalActionType.NotForImport:
-                 copyKey = SettingKey.CopyNotSelectedFiles;
-                 doCopy = AppSettings.Current.GetTyped<bool>(copyKey);
-                 break;
-             case ProposalActionType.Defer:
-                 copyKey = SettingKey.CopyDeferredFiles;
-                 doCopy = AppSettings.Current.GetTyped<bool>(copyKey);
-                 break;
-             case ProposalActionType.Import:
-             default:
-                 copyKey = SettingKey.CopyImportedFiles;
-                 doCopy = AppSettings.Current.GetTyped<bool>(copyKey);
-                 break;
-         }
+            var sourcePath = ResolveSourcePath(action, manualImportFiles);
+            ValidateSourceFile(sourcePath);
 
-         // Optionally copy moved file to secondary location (non-fatal)
-         if (doCopy)
-         {
-             try
-             {
-                 var copyDestRoot = AppSettings.GetValue(SettingKey.CopyImportedFilesPath);
-                 if (!string.IsNullOrWhiteSpace(copyDestRoot))
-                 {
-                     CopyFileToSecondary(sourcePath, action, copyKey);
-                 }
-             }
-             catch
-             {
-                 MessageBox.Show($"Copy of moved file to secondary location failed for '{action.OriginalFileName}'. Continuing with move operation.", "Copy Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
-             }
-         }
+            var sourceFolder = Path.GetDirectoryName(sourcePath) ?? string.Empty;
+            var (doCopy, destDir) = GetMoveConfiguration(action, destination, rootDestination);
 
-         // Compute destination directory at processing time
-         var destDir = destRoot ?? string.Empty;
-         if (appendReleaseFolder)
-         {
-             destDir = Path.Combine(destDir, action.OriginalRelease ?? string.Empty);
-         }
-         string destPath;
-         try
-         {
-             destPath = MoveFileToDestination(sourcePath, destDir);
+            // Optional secondary copy
+            if (doCopy)
+                TrySecondaryCopy(sourcePath, action);
 
-             // Ensure the destination exists after the move (MoveFileToDestination should throw on failure)
-             if (string.IsNullOrWhiteSpace(destPath) || !File.Exists(destPath))
-             {
-                 // If destination doesn't exist, treat as failure
-                 throw new IOException($"Move operation did not produce destination file for source '{sourcePath}' to '{destDir}'.");
-             }
-         }
-         catch
-         {
-             // MoveFileToDestination already shows an error MessageBox. Rethrow to abort.
-             throw;
-         }
+            // Move file using helper
+            var destPath = FileOperationsHelper.MoveFileToDestination(sourcePath, destDir);
+            ValidateMoveResult(sourcePath, destDir, destPath);
 
+            // Cleanup
+            CleanupAfterMove(action, manualImportFiles, proposedActions, sourceFolder);
 
+            Logger.Log($"ProcessMoveAction completed successfully", LogSeverity.Verbose, new { DestPath = destPath });
+        }
 
-         // Remove any proposed actions related to this file (all of them)
-         var related = proposedActions.Where(p => p.FileId == action.FileId).ToList();
-         foreach (var r in related)
-         {
-             // Clear visual flag on manual import file if present
-             var f = manualImportFiles.FirstOrDefault(x => x.Id == r.FileId);
-             if (f != null) f.ProposedActionType = null;
-             proposedActions.Remove(r);
-         }
+        private string ResolveSourcePath(ProposedAction action, ObservableCollection<LidarrManualImportFile> manualImportFiles)
+        {
+            var fileRow = manualImportFiles.FirstOrDefault(f => f.Id == action.FileId);
+            return fileRow != null
+                ? FileOperationsHelper.ResolveMappedPath(fileRow.Path, SettingKey.LidarrImportPath, true)
+                : FileOperationsHelper.ResolveMappedPath(action.Path, SettingKey.LidarrImportPath, true);
+        }
 
-         // Remove the manual import file entry if it was present
-         if (fileRow != null)
-         {
-             manualImportFiles.Remove(fileRow);
-         }
+        private void ValidateSourceFile(string sourcePath)
+        {
+            if (!FileOperationsHelper.ValidateFileExists(sourcePath))
+            {
+                Logger.Log($"Source file not found for move action: {sourcePath}", LogSeverity.High, new { SourcePath = sourcePath }, filePath: sourcePath);
+                throw new IOException($"Source file for action not found: '{sourcePath}'");
+            }
+        }
 
-         // If the source folder is now empty (all files moved), attempt to delete it. Non-fatal.
-         try
-         {
-             if (!string.IsNullOrWhiteSpace(sourceFolder) && Directory.Exists(sourceFolder))
-             {
-                 // Only delete if directory is empty
-                 if (!Directory.EnumerateFileSystemEntries(sourceFolder).Any())
-                 {
-                     Directory.Delete(sourceFolder);
-                 }
-             }
-         }
-         catch (Exception ex)
-         {
-             MessageBox.Show($"Failed to delete empty source folder '{sourceFolder}': {ex.Message}", "Folder Delete Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
-         }
-     }
+        private (bool doCopy, string destDir) GetMoveConfiguration(ProposedAction action, ImportDestination? destination, string rootDestination)
+        {
+            bool doCopy = destination?.CopyFiles ?? false;
+            bool appendReleaseFolder = action.Action != ProposalActionType.Unlink;
 
-     // Helper: process delete actions synchronously. Returns filtered actionsSnapshot (without deletes) or null if aborted due to failure.
-     private List<ProposedAction>? ProcessDeleteActions(List<ProposedAction> actionsSnapshot,
-         ObservableCollection<LidarrManualImportFile> manualImportFiles,
-         ObservableCollection<ProposedAction> proposedActions,
-         ImportResult result)
-     {
-         var deleteActions = actionsSnapshot.Where(a => a.Action == ProposalActionType.Delete).ToList();
-         if (deleteActions.Count == 0) return actionsSnapshot;
+            var destDir = rootDestination ?? string.Empty;
+            if (appendReleaseFolder)
+                destDir = Path.Combine(destDir, action.OriginalRelease ?? string.Empty);
 
-         foreach (var da in deleteActions)
-         {
-             try
-             {
-                 var fileRow = manualImportFiles.FirstOrDefault(f => f.Id == da.FileId);
-                 var sourcePath = string.Empty;
-                 if (fileRow != null)
-                     sourcePath = ResolveMappedPath(fileRow.Path, SettingKey.LidarrImportPath, true);
-                 else
-                     sourcePath = ResolveMappedPath(da.Path, SettingKey.LidarrImportPath, true);
+            Logger.Log($"Move configuration: Copy={doCopy}, DestDir={destDir}", LogSeverity.Verbose, new { DoCopy = doCopy, DestDir = destDir });
+            return (doCopy, destDir);
+        }
 
-                 if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
-                     throw new IOException($"Source file for delete not found: '{sourcePath}'");
+        private void TrySecondaryCopy(string sourcePath, ProposedAction action)
+        {
+            try
+            {
+                var copyDestRoot = AppSettings.GetValue(SettingKey.CopyImportedFilesPath);
+                if (!string.IsNullOrWhiteSpace(copyDestRoot))
+                    CopyFileToSecondary(sourcePath, action, SettingKey.CopyImportedFiles);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"Secondary copy failed (non-fatal): {ex.Message}", LogSeverity.Medium, new { FileName = action.OriginalFileName, Error = ex.Message }, filePath: sourcePath);
+                MessageBox.Show($"Copy of moved file to secondary location failed for '{action.OriginalFileName}'. Continuing with move operation.", "Copy Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
 
-                 var sourceFolder = Path.GetDirectoryName(sourcePath) ?? string.Empty;
-                 File.Delete(sourcePath);
-                 if (File.Exists(sourcePath))
-                     throw new IOException($"Delete operation did not remove file: '{sourcePath}'");
+        private void ValidateMoveResult(string sourcePath, string destDir, string destPath)
+        {
+            if (!FileOperationsHelper.ValidateFileExists(destPath))
+            {
+                Logger.Log($"Move operation did not produce destination file", LogSeverity.Critical, new { Source = sourcePath, DestDir = destDir }, filePath: sourcePath);
+                throw new IOException($"Move operation did not produce destination file for source '{sourcePath}' to '{destDir}'.");
+            }
+        }
 
-                 var related = proposedActions.Where(p => p.FileId == da.FileId).ToList();
-                 foreach (var r in related)
-                 {
-                     var f = manualImportFiles.FirstOrDefault(x => x.Id == r.FileId);
-                     if (f != null) f.ProposedActionType = null;
-                     proposedActions.Remove(r);
-                 }
+        private void CleanupAfterMove(ProposedAction action, ObservableCollection<LidarrManualImportFile> manualImportFiles, ObservableCollection<ProposedAction> proposedActions, string sourceFolder)
+        {
+            var related = proposedActions.Where(p => p.FileId == action.FileId).ToList();
+            Logger.Log($"Removing {related.Count} related proposed actions", LogSeverity.Verbose, new { FileId = action.FileId, Count = related.Count });
 
-                 if (fileRow != null) manualImportFiles.Remove(fileRow);
+            foreach (var r in related)
+            {
+                var f = manualImportFiles.FirstOrDefault(x => x.Id == r.FileId);
+                if (f != null) f.ProposedActionType = null;
+                proposedActions.Remove(r);
+            }
 
-                 // Attempt to delete empty folder (non-fatal)
-                 try
-                 {
-                     if (!string.IsNullOrWhiteSpace(sourceFolder) && Directory.Exists(sourceFolder))
-                     {
-                         if (!Directory.EnumerateFileSystemEntries(sourceFolder).Any())
-                             Directory.Delete(sourceFolder);
-                     }
-                 }
-                 catch { }
+            var fileRow = manualImportFiles.FirstOrDefault(f => f.Id == action.FileId);
+            if (fileRow != null)
+            {
+                manualImportFiles.Remove(fileRow);
+                Logger.Log("Removed manual import file entry", LogSeverity.Verbose, new { FileId = action.FileId });
+            }
 
-                 da.ImportStatus = "Success";
-                 result.SuccessCount++;
-             }
-             catch (Exception ex)
-             {
-                 da.ImportStatus = "Failed";
-                 da.ErrorMessage = ex.Message;
-                 MessageBox.Show($"Delete failed for '{da.OriginalFileName}': {ex.Message}", "Delete Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                 return null; // abort
-             }
-         }
+            FileOperationsHelper.TryDeleteEmptyDirectory(sourceFolder);
+        }
 
-         return actionsSnapshot.Where(a => a.Action != ProposalActionType.Delete).ToList();
-     }
+        #endregion
 
-     // Helper: process import actions asynchronously
-     private async Task ProcessImportActions(LidarrHelper lidarr,
-         List<ProposedAction> actionsSnapshot,
-         ObservableCollection<LidarrManualImportFile> manualImportFiles,
-         ObservableCollection<ProposedAction> proposedActions,
-         ObservableCollection<LidarrArtistReleaseTrack> artistReleaseTracks,
-         ImportResult result)
-     {
-         var importGroups = actionsSnapshot.Where(a => a.Action == ProposalActionType.Import).GroupBy(a => a.OriginalRelease);
-         foreach (var group in importGroups)
-         {
-             var actionsForRelease = group.ToList();
-             try
-             {
-                 var success = await lidarr.ImportFilesAsync(actionsForRelease);
-                    if (success)
+        #region Delete Processing
+
+        private List<ProposedAction>? ProcessDeleteActions(List<ProposedAction> actionsSnapshot,
+            ObservableCollection<LidarrManualImportFile> manualImportFiles,
+            ObservableCollection<ProposedAction> proposedActions,
+            ImportResult result)
+        {
+            var deleteActions = actionsSnapshot.Where(a => a.Action == ProposalActionType.Delete).ToList();
+            if (deleteActions.Count == 0)
+            {
+                Logger.Log("No Delete actions to process", LogSeverity.Verbose);
+                return actionsSnapshot;
+            }
+
+            Logger.Log($"Processing {deleteActions.Count} Delete actions", LogSeverity.Medium, new { Count = deleteActions.Count });
+
+            foreach (var da in deleteActions)
+            {
+                if (!ProcessSingleDeleteAction(da, manualImportFiles, proposedActions, result))
+                    return null;
+            }
+
+            Logger.Log($"Delete actions completed - {result.SuccessCount} files deleted", LogSeverity.Medium, new { DeletedCount = result.SuccessCount });
+            return actionsSnapshot.Where(a => a.Action != ProposalActionType.Delete).ToList();
+        }
+
+        private bool ProcessSingleDeleteAction(ProposedAction da, ObservableCollection<LidarrManualImportFile> manualImportFiles, ObservableCollection<ProposedAction> proposedActions, ImportResult result)
+        {
+            try
+            {
+                Logger.Log($"Processing Delete action for: {da.OriginalFileName}", LogSeverity.Low, new { FileName = da.OriginalFileName, FileId = da.FileId }, filePath: da.Path);
+
+                var sourcePath = ResolveSourcePath(da, manualImportFiles);
+                ValidateSourceFile(sourcePath);
+
+                var sourceFolder = Path.GetDirectoryName(sourcePath) ?? string.Empty;
+                File.Delete(sourcePath);
+
+                if (File.Exists(sourcePath))
+                    throw new IOException($"Delete operation did not remove file: '{sourcePath}'");
+
+                Logger.Log($"File deleted successfully: {sourcePath}", LogSeverity.Low, new { SourcePath = sourcePath }, filePath: sourcePath);
+
+                CleanupAfterMove(da, manualImportFiles, proposedActions, sourceFolder);
+
+                da.ImportStatus = "Success";
+                result.SuccessCount++;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"Delete action failed: {ex.Message}", LogSeverity.High, new { FileName = da.OriginalFileName, Error = ex.Message });
+                da.ImportStatus = "Failed";
+                da.ErrorMessage = ex.Message;
+                MessageBox.Show($"Delete failed for '{da.OriginalFileName}': {ex.Message}", "Delete Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return false;
+            }
+        }
+
+        #endregion
+
+        #region Import Processing
+
+        private async Task ProcessImportActions(LidarrHelper lidarr,
+            List<ProposedAction> actionsSnapshot,
+            ObservableCollection<LidarrManualImportFile> manualImportFiles,
+            ObservableCollection<ProposedAction> proposedActions,
+            ObservableCollection<LidarrArtistReleaseTrack> artistReleaseTracks,
+            ImportResult result)
+        {
+            var importGroups = actionsSnapshot.Where(a => a.Action == ProposalActionType.Import).GroupBy(a => a.OriginalRelease);
+            var groupCount = importGroups.Count();
+
+            if (groupCount == 0)
+            {
+                Logger.Log("No Import actions to process", LogSeverity.Verbose);
+                return;
+            }
+
+            Logger.Log($"Processing {groupCount} import groups", LogSeverity.Medium, new { GroupCount = groupCount });
+
+            foreach (var group in importGroups)
+            {
+                await ProcessImportGroup(group, lidarr, manualImportFiles, proposedActions, artistReleaseTracks, result);
+            }
+
+            Logger.Log($"Import actions completed - Success: {result.SuccessCount}, Failed: {result.FailCount}", LogSeverity.Medium, new { Success = result.SuccessCount, Failed = result.FailCount });
+        }
+
+        private async Task ProcessImportGroup(IGrouping<string?, ProposedAction> group, LidarrHelper lidarr, ObservableCollection<LidarrManualImportFile> manualImportFiles, ObservableCollection<ProposedAction> proposedActions, ObservableCollection<LidarrArtistReleaseTrack> artistReleaseTracks, ImportResult result)
+        {
+            var actionsForRelease = group.ToList();
+            Logger.Log($"Processing import group for release: {group.Key}", LogSeverity.Low, new { Release = group.Key, ActionCount = actionsForRelease.Count });
+
+            try
+            {
+                var success = await lidarr.ImportFilesAsync(actionsForRelease);
+                if (success)
+                {
+                    await ProcessSuccessfulImport(actionsForRelease, lidarr, manualImportFiles, result, group.Key);
+                }
+                else
+                {
+                    MarkImportGroupAsFailed(actionsForRelease, result, group.Key);
+                }
+            }
+            catch (Exception ex)
+            {
+                MarkImportGroupAsException(actionsForRelease, result, group.Key, ex);
+            }
+        }
+
+        private async Task ProcessSuccessfulImport(List<ProposedAction> actionsForRelease, LidarrHelper lidarr, ObservableCollection<LidarrManualImportFile> manualImportFiles, ImportResult result, string? releaseKey)
+        {
+            Logger.Log($"Lidarr import command succeeded for release: {releaseKey}", LogSeverity.Low, new { Release = releaseKey });
+
+            foreach (var a in actionsForRelease)
+            {
+                await ProcessSingleImportVerification(a, lidarr, manualImportFiles, result);
+            }
+        }
+
+        private async Task ProcessSingleImportVerification(ProposedAction a, LidarrHelper lidarr, ObservableCollection<LidarrManualImportFile> manualImportFiles, ImportResult result)
+        {
+            Logger.Log($"Verifying import for track: {a.MatchedTrack}", LogSeverity.Verbose, new { TrackId = a.TrackId, AlbumReleaseId = a.AlbumReleaseId });
+
+            var tf = await TryRetrieveTrackFile(a, lidarr);
+
+            if (tf == null)
+            {
+                HandleFailedTrackRetrieval(a, manualImportFiles, result);
+                return;
+            }
+
+            MarkImportSuccess(a, result);
+            await TrySecondaryCopyForImport(a, tf);
+        }
+
+        private async Task<LidarrTrackFile?> TryRetrieveTrackFile(ProposedAction a, LidarrHelper lidarr)
+        {
+            for (int attempt = 1; attempt <= MaxTrackFetchAttempts; attempt++)
+            {
+                Logger.Log($"Attempt {attempt}/{MaxTrackFetchAttempts} to retrieve track from Lidarr", LogSeverity.Verbose, new { TrackId = a.TrackId, Attempt = attempt });
+
+                try
+                {
+                    var tracks = await lidarr.GetTracksByReleaseAsync(a.AlbumReleaseId).ConfigureAwait(false);
+                    var matched = tracks?.FirstOrDefault(t => t.Id == a.TrackId);
+
+                    if (matched != null && matched.TrackFileId > 0)
                     {
-
-                        foreach (var a in actionsForRelease)
+                        var tf = await lidarr.GetTrackFileAsync(matched.TrackFileId).ConfigureAwait(false);
+                        if (tf != null && !string.IsNullOrWhiteSpace(tf.Path))
                         {
-
-
-                            bool importMarkedSuccess = false;
-
-                            // Try to find the imported track from Lidarr's track list for this release
-                            IList<LidarrTrack>? tracks = null;
-                            const int maxAttempts = 20;
-                            const int delayMs = 3000;
-                            LidarrTrackFile? tf = null;
-
-                            for (int attempt = 1; attempt <= maxAttempts; attempt++)
-                            {
-                                try
-                                {
-                                    tracks = await lidarr.GetTracksByReleaseAsync(a.AlbumReleaseId).ConfigureAwait(false);
-                                }
-                                catch
-                                {
-                                    // ignore and retry
-                                    tracks = null;
-                                }
-
-                                var matched = tracks.FirstOrDefault(t => t.Id == a.TrackId);
-                                if (matched != null)
-                                {
-
-                                    try
-                                    {
-                                        if (matched.TrackFileId > 0)
-                                        {
-                                            tf = await lidarr.GetTrackFileAsync(matched.TrackFileId).ConfigureAwait(false);
-                                        }
-                                    }
-                                    catch
-                                    {
-                                        MessageBox.Show("Coulnd't get trackFile");
-                                        // ignore failures fetching trackfile
-                                    }
-
-                                    // Only mark as success if we have a track file with a path
-                                    if (tf != null && !string.IsNullOrWhiteSpace(tf.Path))
-                                    {
-                                        a.ImportStatus = "Success";
-                                        result.SuccessCount++;
-                                        importMarkedSuccess = true;
-                                        break;
-                                    }
-                                    else
-                                    {
-                                        a.ImportStatus = "Failed";
-                                        a.ErrorMessage = "Imported file record not found in Lidarr (no path returned)";
-                                        result.FailCount++;
-                                    }
-
-
-                                    if (attempt < maxAttempts)
-                                        await Task.Delay(delayMs).ConfigureAwait(false);
-                                }
-
-                            }
-
-                            //if tf is null at this point, even waiting / retrying didnt help. Tidy up and move on
-                            if (tf == null)
-                            {
-                                a.ImportStatus = "Failed";
-                                a.ErrorMessage = "Could not retrieve tracks for release from Lidarr after multiple attempts";
-                                result.FailCount++;
-                                // remove manual file row if present and continue to next action
-                                var fileRowFail = manualImportFiles.FirstOrDefault(f => f.Id == a.FileId);
-                                if (fileRowFail != null)
-                                {
-                                    var dispatcherFail = Application.Current?.Dispatcher ?? System.Windows.Threading.Dispatcher.CurrentDispatcher;
-                                    dispatcherFail.BeginInvoke(new Action(() =>
-                                    {
-                                        try { if (manualImportFiles.Contains(fileRowFail)) manualImportFiles.Remove(fileRowFail); } catch { }
-                                    }));
-                                }
-                                continue;
-                            }
-
-                            // Show info regardless
-                            //MessageBox.Show($"Imported Track: '{matched.Title}'\nTrackId: {matched.Id}\nTrackFileId: {matched.TrackFileId}\nPath: {tfPath}", "Imported Track", MessageBoxButton.OK, MessageBoxImage.Information);
-
-                            // If we have a track file path, use it as the source for secondary copy
-                            var copyEnabled = AppSettings.Current.GetTyped<bool>(SettingKey.CopyImportedFiles);
-                            var copyDestRoot = AppSettings.GetValue(SettingKey.CopyImportedFilesPath);
-                            if (copyEnabled && !string.IsNullOrWhiteSpace(copyDestRoot) && importMarkedSuccess && tf != null && !string.IsNullOrWhiteSpace(tf.Path))
-                            {
-                                try
-                                {
-                                    var resolvedTfPath = ResolveMappedPath(tf.Path, SettingKey.LidarrLibraryPath, true);
-                                    var copySuccess = CopyFileToSecondary(resolvedTfPath, a, SettingKey.CopyImportedFiles);
-                                    if (!copySuccess)
-                                    {
-                                        MessageBox.Show($"Copy of imported file at resolved path '{resolvedTfPath}' failed for  '{a.OriginalFileName}'.", "Copy Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
-                                    }
-
-                                }
-                                catch
-                                {
-                                    MessageBox.Show("Copy of imported file to secondary location aborted for '" + a.OriginalFileName + "'. Continuing.", "Copy Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
-                                }
-                            }
-
-                            else
-                            {
-                                // No matching track in Lidarr's release listing
-                                a.ImportStatus = "Failed";
-                                a.ErrorMessage = "Couldn't resolve link to imported track via Lidarr release listing";
-                                result.FailCount++;
-                            }
-                            
+                            Logger.Log($"Track file verified successfully: {tf.Path}", LogSeverity.Low, new { TrackFileId = tf.Id, Path = tf.Path });
+                            return tf;
                         }
                     }
-                    else
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"Failed to get track (attempt {attempt}): {ex.Message}", LogSeverity.Low, new { Attempt = attempt, Error = ex.Message });
+                }
+
+                if (attempt < MaxTrackFetchAttempts)
+                    await Task.Delay(TrackFetchDelayMs).ConfigureAwait(false);
+            }
+
+            return null;
+        }
+
+        private void HandleFailedTrackRetrieval(ProposedAction a, ObservableCollection<LidarrManualImportFile> manualImportFiles, ImportResult result)
+        {
+            Logger.Log($"Could not retrieve track file after {MaxTrackFetchAttempts} attempts", LogSeverity.High, new { TrackId = a.TrackId, FileName = a.OriginalFileName });
+            a.ImportStatus = "Failed";
+            a.ErrorMessage = "Could not retrieve tracks for release from Lidarr after multiple attempts";
+            result.FailCount++;
+
+            var fileRowFail = manualImportFiles.FirstOrDefault(f => f.Id == a.FileId);
+            if (fileRowFail != null)
+            {
+                var dispatcher = Application.Current?.Dispatcher ?? System.Windows.Threading.Dispatcher.CurrentDispatcher;
+                dispatcher.BeginInvoke(new Action(() =>
+                {
+                    try { if (manualImportFiles.Contains(fileRowFail)) manualImportFiles.Remove(fileRowFail); }
+                    catch { }
+                }));
+            }
+        }
+
+        private void MarkImportSuccess(ProposedAction a, ImportResult result)
+        {
+            a.ImportStatus = "Success";
+            result.SuccessCount++;
+        }
+
+        private async Task TrySecondaryCopyForImport(ProposedAction a, LidarrTrackFile tf)
+        {
+            var copyEnabled = AppSettings.Current.GetTyped<bool>(SettingKey.CopyImportedFiles);
+            var copyDestRoot = AppSettings.GetValue(SettingKey.CopyImportedFilesPath);
+
+            if (!copyEnabled || string.IsNullOrWhiteSpace(copyDestRoot) || string.IsNullOrWhiteSpace(tf.Path))
+                return;
+
+            try
+            {
+                var resolvedTfPath = FileOperationsHelper.ResolveMappedPath(tf.Path, SettingKey.LidarrLibraryPath, true);
+                Logger.Log($"Copying imported file to secondary location", LogSeverity.Low, new { SourcePath = tf.Path }, filePath: resolvedTfPath);
+                var copySuccess = CopyFileToSecondary(resolvedTfPath, a, SettingKey.CopyImportedFiles);
+
+                if (!copySuccess)
+                {
+                    Logger.Log($"Secondary copy failed for imported file", LogSeverity.Medium, new { ResolvedPath = resolvedTfPath, FileName = a.OriginalFileName }, filePath: resolvedTfPath);
+                    MessageBox.Show($"Copy of imported file at resolved path '{resolvedTfPath}' failed for '{a.OriginalFileName}'.", "Copy Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"Exception during secondary copy: {ex.Message}", LogSeverity.Medium, new { FileName = a.OriginalFileName, Error = ex.Message });
+                MessageBox.Show($"Copy of imported file to secondary location aborted for '{a.OriginalFileName}'. Continuing.", "Copy Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        private void MarkImportGroupAsFailed(List<ProposedAction> actionsForRelease, ImportResult result, string? releaseKey)
+        {
+            Logger.Log($"Lidarr import command reported failure for release: {releaseKey}", LogSeverity.High, new { Release = releaseKey });
+            foreach (var a in actionsForRelease)
+            {
+                a.ImportStatus = "Failed";
+                a.ErrorMessage = "Import failed (Lidarr returned failure)";
+                result.FailCount++;
+            }
+        }
+
+        private void MarkImportGroupAsException(List<ProposedAction> actionsForRelease, ImportResult result, string? releaseKey, Exception ex)
+        {
+            Logger.Log($"Exception during import processing: {ex.Message}", LogSeverity.High, new { Release = releaseKey, Error = ex.Message });
+            foreach (var a in actionsForRelease)
+            {
+                a.ImportStatus = "Failed";
+                a.ErrorMessage = ex.Message;
+                result.FailCount++;
+            }
+        }
+
+        #endregion
+
+        #region Cover Art Processing
+
+        /// <summary>
+        /// Pre-process step to check if any actions require cover art verification
+        /// </summary>
+        private async Task<bool> ProcessCoverArtRequirements(List<ProposedAction> actionsSnapshot, ImportResult result)
+        {
+            Logger.Log("Checking cover art requirements", LogSeverity.Low);
+
+            var destinations = AppSettings.Current.ImportDestinations ?? new List<ImportDestination>();
+            
+            // Find all actions that target destinations requiring cover art
+            var actionsRequiringCoverArt = actionsSnapshot
+                .Where(a => a.Action == ProposalActionType.MoveToDestination || 
+                           a.Action == ProposalActionType.Import)
+                .Where(a =>
+                {
+                    // For MoveToDestination, check the destination's RequireArtwork setting
+                    if (a.Action == ProposalActionType.MoveToDestination && !string.IsNullOrWhiteSpace(a.DestinationName))
                     {
-                        // ImportFilesAsync reported failure for whole batch - mark each action failed
-                        foreach (var a in actionsForRelease)
-                        {
-                            a.ImportStatus = "Failed";
-                            a.ErrorMessage = "Import failed (Lidarr returned failure)";
-                            result.FailCount++;
-                        }
+                        var dest = destinations.FirstOrDefault(d => d.Name == a.DestinationName);
+                        return dest?.RequireArtwork ?? false;
                     }
-             }
-             catch (Exception ex)
-             {
-                 // Exception during import - mark all actions in group as failed with the exception
-                 foreach (var a in actionsForRelease)
-                 {
-                     a.ImportStatus = "Failed";
-                     a.ErrorMessage = ex.Message;
-                     result.FailCount++;
-                 }
-             }
-         }
-     }
+                    
+                    // For Import actions, check if any destination requires artwork (this is configurable)
+                    // For now, we'll skip import actions unless they also have a destination
+                    return false;
+                })
+                .ToList();
+
+            if (!actionsRequiringCoverArt.Any())
+            {
+                Logger.Log("No actions require cover art verification", LogSeverity.Verbose);
+                return true;
+            }
+
+            Logger.Log($"Found {actionsRequiringCoverArt.Count} action(s) requiring cover art verification", LogSeverity.Medium, new { Count = actionsRequiringCoverArt.Count });
+
+            // Show the cover art window on the UI thread
+            bool? dialogResult = null;
+            await Application.Current.Dispatcher.InvokeAsync(() =>
+            {
+                var coverArtWindow = new CoverArtWindow
+                {
+                    Owner = Application.Current.MainWindow
+                };
+
+                coverArtWindow.LoadActions(actionsRequiringCoverArt, destinations);
+                dialogResult = coverArtWindow.ShowDialog();
+            });
+
+            if (dialogResult != true)
+            {
+                Logger.Log("Cover art process was aborted by user", LogSeverity.Medium);
+                return false;
+            }
+
+            Logger.Log("Cover art pre-processing completed successfully", LogSeverity.Low);
+            return true;
+        }
+
+        #endregion
     }
 }

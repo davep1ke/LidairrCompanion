@@ -7,6 +7,9 @@
         xmlns:helpers="clr-namespace:LidarrCompanion.Helpers"
         mc:Ignorable="d"
         Title="Lidarr AI Companion" Height="966" Width="1278">
+    <Window.Resources>
+        <helpers:GridViewColumnWidthConverter x:Key="WidthConverter"/>
+    </Window.Resources>
     <Grid Margin="0,0,0,8" x:Name="mainGrid">
         <Grid.RowDefinitions>
             <RowDefinition Height="253*"/>
@@ -49,6 +52,19 @@
                         <DataTrigger Binding="{Binding Match}" Value="{x:Static helpers:ReleaseMatchType.AlbumFirstFile}">
                             <Setter Property="Background" Value="LightBlue" />
                         </DataTrigger>
+                        
+                        <!-- Selection and hover states - these have HIGHER priority than data-driven colors above -->
+                        <MultiTrigger>
+                            <MultiTrigger.Conditions>
+                                <Condition Property="IsMouseOver" Value="True"/>
+                                <Condition Property="IsSelected" Value="False"/>
+                            </MultiTrigger.Conditions>
+                            <Setter Property="Background" Value="{DynamicResource ListViewItemHoverBrush}"/>
+                        </MultiTrigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter Property="Background" Value="{DynamicResource ListViewItemSelectionBrush}"/>
+                            <Setter Property="Foreground" Value="White"/>
+                        </Trigger>
                     </Style.Triggers>
                 </Style>
             </ListView.ItemContainerStyle>
@@ -87,131 +103,272 @@
 
         <!-- GRID ROW 1 -->
 
+        <!-- Create a grid for Row 1 to handle proper resizing -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" MinWidth="250"/>
+                <ColumnDefinition Width="*" MinWidth="250"/>
+                <ColumnDefinition Width="129"/>
+            </Grid.ColumnDefinitions>
 
-        <ListView x:Name="list_Files_in_Release" Margin="10,33,0,10" HorizontalAlignment="Left" Width="504" Grid.Row="1" SelectionMode="Extended">
-            <ListView.ItemContainerStyle>
-                <Style TargetType="{x:Type ListViewItem}">
-                    <Style.Setters>
-                        <Setter Property="Background" Value="{Binding ProposedActionType, Converter={StaticResource ActionToBackgroundConverter}}"/>
-                        <Setter Property="Foreground" Value="{Binding ProposedActionType, Converter={StaticResource ActionToForegroundConverter}}"/>
-                    </Style.Setters>
-                </Style>
-            </ListView.ItemContainerStyle>
-            <ListView.View>
-                <GridView>
-                    <GridViewColumn Header="Name" DisplayMemberBinding="{Binding Name}" Width="200"/>
-                    <GridViewColumn Header="Path" DisplayMemberBinding="{Binding Path}" Width="250"/>
-                </GridView>
-            </ListView.View>
-        </ListView>
+            <!-- Left Column: Unimported Release Files -->
+            <Grid Grid.Column="0" Margin="10,0,5,0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
 
-        <ListView x:Name="list_Artist_Releases" Margin="519,33,126,10" SelectionMode="Single" Grid.Row="1">
-            <ListView.ItemContainerStyle>
-                <Style TargetType="{x:Type ListViewItem}">
-                    <Setter Property="Background" Value="Transparent"/>
-                    <Style.Triggers>
-                        <!-- Pre-matched (hasFile) -> grey so user knows it'll overwrite -->
-                        <DataTrigger Binding="{Binding HasFile}" Value="True">
-                            <Setter Property="Background" Value="LightGray"/>
-                        </DataTrigger>
-                        <!-- Other tracks in a release that has assigned tracks -> light blue -->
-                        <DataTrigger Binding="{Binding IsReleaseHasAssigned}" Value="True">
-                            <Setter Property="Background" Value="LightBlue"/>
-                        </DataTrigger>
-                        <!-- Assigned (matched) in UI -> light green and disable -->
-                        <DataTrigger Binding="{Binding IsAssigned}" Value="True">
-                            <Setter Property="Background" Value="LightGreen"/>
-                            <Setter Property="IsEnabled" Value="False"/>
-                        </DataTrigger>
-                    </Style.Triggers>
-                </Style>
-            </ListView.ItemContainerStyle>
+                <Grid Grid.Row="0" Margin="0,5,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
 
-            <ListView.View>
-                <GridView>
-                    <GridViewColumn Header="Type" DisplayMemberBinding="{Binding AlbumType}" Width="80"/>
-                    <GridViewColumn Header="Release" DisplayMemberBinding="{Binding Release}" Width="250"/>
-                    <GridViewColumn Header="Track" DisplayMemberBinding="{Binding Track}" Width="230"/>
-                    <GridViewColumn Header="Exists?" Width="50">
-                        <GridViewColumn.CellTemplate>
-                            <DataTemplate>
-                                <CheckBox IsChecked="{Binding HasFile}" IsEnabled="False" HorizontalAlignment="Center"/>
-                            </DataTemplate>
-                        </GridViewColumn.CellTemplate>
-                    </GridViewColumn>
-                    <GridViewColumn Header="Score" Width="80">
-                        <GridViewColumn.CellTemplate>
-                            <DataTemplate>
-                                <TextBlock Text="{Binding Score, StringFormat={}{0:F1}}" HorizontalAlignment="Right"/>
-                            </DataTemplate>
-                        </GridViewColumn.CellTemplate>
-                    </GridViewColumn>
-                </GridView>
-            </ListView.View>
-        </ListView>
+                    <Label Grid.Column="0" x:Name="label_unimported" Content="Unimported Release Files:" Width="167" Height="26"/>
+                    
+                    <Button Grid.Column="1" x:Name="btn_PlayTrack" Content="Play Track" Click="btn_PlayTrack_Click" MouseRightButtonUp="btn_PlayTrack_MouseRightButtonUp" Width="109" Height="21" Margin="0,3,5,0" VerticalAlignment="Top" HorizontalAlignment="Right"/>
+                    
+                    <!-- Button group in a horizontal StackPanel -->
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Top" Margin="0,3,0,0">
+                        <Button x:Name="btn_CoverArt" Click="btn_CoverArt_Click" Width="21" Height="21" Margin="0,0,2,0" ToolTip="Manage Cover Art">
+                            <TextBlock Text="🎨" FontSize="14"/>
+                        </Button>
+                        <Button x:Name="btn_OpenReleaseFolder" Click="btn_OpenReleaseFolder_Click" Width="21" Height="21" ToolTip="Open Folder">
+                            <TextBlock Text="📁" FontSize="14"/>
+                        </Button>
+                    </StackPanel>
+                </Grid>
 
-        <!-- Play and open-release folder (left of right column) remain as-is -->
-        <Button x:Name="btn_PlayTrack" Content="Play Track" Click="btn_PlayTrack_Click" MouseRightButtonUp="btn_PlayTrack_MouseRightButtonUp" Margin="379,8,0,0" HorizontalAlignment="Left" Width="109" RenderTransformOrigin="0.486,1.097" Grid.Row="1" Height="21" VerticalAlignment="Top"/>
-        <Button x:Name="btn_OpenReleaseFolder" Click="btn_OpenReleaseFolder_Click" Margin="493,8,0,0" HorizontalAlignment="Left" Width="21" Grid.Row="1" Height="21" VerticalAlignment="Top">
-            <TextBlock Text="📁" FontSize="14" HorizontalAlignment="Center" VerticalAlignment="Top"/>
-        </Button>
+                <ListView Grid.Row="1" x:Name="list_Files_in_Release" Margin="0,5,0,10" SelectionMode="Extended">
+                    <ListView.ItemContainerStyle>
+                        <Style TargetType="{x:Type ListViewItem}">
+                            <Style.Setters>
+                                <Setter Property="Background" Value="{Binding ProposedActionType, Converter={StaticResource ActionToBackgroundConverter}}"/>
+                                <Setter Property="Foreground" Value="{Binding ProposedActionType, Converter={StaticResource ActionToForegroundConverter}}"/>
+                            </Style.Setters>
+                            <Style.Triggers>
+                                <!-- Selection and hover - triggers override setters -->
+                                <MultiTrigger>
+                                    <MultiTrigger.Conditions>
+                                        <Condition Property="IsMouseOver" Value="True"/>
+                                        <Condition Property="IsSelected" Value="False"/>
+                                    </MultiTrigger.Conditions>
+                                    <Setter Property="Background" Value="{DynamicResource ListViewItemHoverBrush}"/>
+                                </MultiTrigger>
+                                <Trigger Property="IsSelected" Value="True">
+                                    <Setter Property="Background" Value="{DynamicResource ListViewItemSelectionBrush}"/>
+                                    <Setter Property="Foreground" Value="White"/>
+                                </Trigger>
+                            </Style.Triggers>
+                        </Style>
+                    </ListView.ItemContainerStyle>
+                    <ListView.View>
+                        <GridView>
+                            <GridViewColumn Header="Name" DisplayMemberBinding="{Binding Name}">
+                                <GridViewColumn.Width>
+                                    <Binding RelativeSource="{RelativeSource AncestorType=ListView}" Path="ActualWidth" Converter="{StaticResource WidthConverter}" ConverterParameter="0.4|200"/>
+                                </GridViewColumn.Width>
+                            </GridViewColumn>
+                            <GridViewColumn Header="Path" DisplayMemberBinding="{Binding Path}">
+                                <GridViewColumn.Width>
+                                    <Binding RelativeSource="{RelativeSource AncestorType=ListView}" Path="ActualWidth" Converter="{StaticResource WidthConverter}" ConverterParameter="0.6|250"/>
+                                </GridViewColumn.Width>
+                            </GridViewColumn>
+                        </GridView>
+                    </ListView.View>
+                </ListView>
+            </Grid>
 
-        <Label x:Name="label" Content="Unimported Release Files:" HorizontalAlignment="Left" Margin="10,5,0,0" VerticalAlignment="Top" Width="167" Height="26" Grid.Row="1"/>
-        <Label x:Name="label_Copy" Content="Artist Release Files:" HorizontalAlignment="Left" Margin="519,5,0,0" VerticalAlignment="Top" Width="167" Height="26" Grid.Row="1" RenderTransformOrigin="0.5,0.5">
-            <Label.RenderTransform>
-                <TransformGroup>
-                    <ScaleTransform/>
-                    <SkewTransform/>
-                    <RotateTransform Angle="0.319"/>
-                    <TranslateTransform/>
-                </TransformGroup>
-            </Label.RenderTransform>
-        </Label>
+            <!-- Middle Column: Artist Release Files -->
+            <Grid Grid.Column="1" Margin="5,0,5,0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
 
-        <!-- Right-side column for Row 1: top area aligns to list_Files_in_Release top (33), bottom area contains Clear button bottom-aligned -->
-        <Grid Grid.Row="1" HorizontalAlignment="Right" Width="109" Margin="0,33,10,19">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="*" />
-                <RowDefinition Height="Auto" />
-            </Grid.RowDefinitions>
+                <Label Grid.Row="0" x:Name="label_artist_release" Content="Artist Release Files:" Width="166" Height="26" Margin="0,5,0,0" RenderTransformOrigin="0.5,0.5">
+                    <Label.RenderTransform>
+                        <TransformGroup>
+                            <ScaleTransform/>
+                            <SkewTransform/>
+                            <RotateTransform Angle="0.319"/>
+                            <TranslateTransform/>
+                        </TransformGroup>
+                    </Label.RenderTransform>
+                </Label>
 
-            <!-- Top controls: align with list_Files_in_Release top -->
-            <StackPanel Grid.Row="0" Orientation="Vertical">
-                <ComboBox x:Name="cmb_SortMode" SelectionChanged="cmb_SortMode_SelectionChanged" Width="109" Height="23" Margin="0,0,0,6">
-                    <ComboBoxItem Content="by Release" />
-                    <ComboBoxItem Content="by Track Num" />
-                    <ComboBoxItem Content="by Track Name" />
-                    <ComboBoxItem Content="by Best" IsSelected="True" />
-                </ComboBox>
+                <ListView Grid.Row="1" x:Name="list_Artist_Releases" Margin="0,5,0,10" SelectionMode="Single">
+                    <ListView.ItemContainerStyle>
+                        <Style TargetType="{x:Type ListViewItem}">
+                            <Setter Property="Background" Value="Transparent"/>
+                            <Style.Triggers>
+                                <!-- Pre-matched (hasFile) -> grey so user knows it'll overwrite -->
+                                <DataTrigger Binding="{Binding HasFile}" Value="True">
+                                    <Setter Property="Background" Value="{Binding Converter={StaticResource ThemedColorConverter}, ConverterParameter=TrackHasFile}"/>
+                                </DataTrigger>
+                                <!-- Other tracks in a release that has assigned tracks -> light blue -->
+                                <DataTrigger Binding="{Binding IsReleaseHasAssigned}" Value="True">
+                                    <Setter Property="Background" Value="{Binding Converter={StaticResource ThemedColorConverter}, ConverterParameter=ReleaseHasAssigned}"/>
+                                </DataTrigger>
+                                <!-- Assigned (matched) in UI -> light green and disable -->
+                                <DataTrigger Binding="{Binding IsAssigned}" Value="True">
+                                    <Setter Property="Background" Value="{Binding Converter={StaticResource ThemedColorConverter}, ConverterParameter=TrackAssigned}"/>
+                                    <Setter Property="IsEnabled" Value="False"/>
+                                </DataTrigger>
+                                
+                                <!-- Selection and hover states - higher priority -->
+                                <MultiTrigger>
+                                    <MultiTrigger.Conditions>
+                                        <Condition Property="IsMouseOver" Value="True"/>
+                                        <Condition Property="IsSelected" Value="False"/>
+                                    </MultiTrigger.Conditions>
+                                    <Setter Property="Background" Value="{DynamicResource ListViewItemHoverBrush}"/>
+                                </MultiTrigger>
+                                <Trigger Property="IsSelected" Value="True">
+                                    <Setter Property="Background" Value="{DynamicResource ListViewItemSelectionBrush}"/>
+                                    <Setter Property="Foreground" Value="White"/>
+                                </Trigger>
+                            </Style.Triggers>
+                        </Style>
+                    </ListView.ItemContainerStyle>
 
-                <Button x:Name="btn_AI_SearchMatch" Content="AI Match" Margin="0,0,0,6" Click="btn_AI_SearchMatch_Click" Height="20" Width="109" />
-            </StackPanel>
+                    <ListView.View>
+                        <GridView>
+                            <GridViewColumn Header="Type" DisplayMemberBinding="{Binding AlbumType}">
+                                <GridViewColumn.Width>
+                                    <Binding RelativeSource="{RelativeSource AncestorType=ListView}" Path="ActualWidth" Converter="{StaticResource WidthConverter}" ConverterParameter="0.12|80"/>
+                                </GridViewColumn.Width>
+                            </GridViewColumn>
+                            <GridViewColumn Header="Release" DisplayMemberBinding="{Binding Release}">
+                                <GridViewColumn.Width>
+                                    <Binding RelativeSource="{RelativeSource AncestorType=ListView}" Path="ActualWidth" Converter="{StaticResource WidthConverter}" ConverterParameter="0.36|250"/>
+                                </GridViewColumn.Width>
+                            </GridViewColumn>
+                            <GridViewColumn Header="Track" DisplayMemberBinding="{Binding Track}">
+                                <GridViewColumn.Width>
+                                    <Binding RelativeSource="{RelativeSource AncestorType=ListView}" Path="ActualWidth" Converter="{StaticResource WidthConverter}" ConverterParameter="0.33|230"/>
+                                </GridViewColumn.Width>
+                            </GridViewColumn>
+                            <GridViewColumn Header="Exists?" Width="50">
+                                <GridViewColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <CheckBox IsChecked="{Binding HasFile}" IsEnabled="False" HorizontalAlignment="Center"/>
+                                    </DataTemplate>
+                                </GridViewColumn.CellTemplate>
+                            </GridViewColumn>
+                            <GridViewColumn Header="Score">
+                                <GridViewColumn.Width>
+                                    <Binding RelativeSource="{RelativeSource AncestorType=ListView}" Path="ActualWidth" Converter="{StaticResource WidthConverter}" ConverterParameter="0.12|80"/>
+                                </GridViewColumn.Width>
+                                <GridViewColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding Score, StringFormat={}{0:F1}}" HorizontalAlignment="Right"/>
+                                    </DataTemplate>
+                                </GridViewColumn.CellTemplate>
+                            </GridViewColumn>
+                        </GridView>
+                    </ListView.View>
+                </ListView>
+            </Grid>
 
-            <!-- Bottom controls: bottom aligned inside Grid -->
-            <StackPanel Grid.Row="2" Orientation="Vertical" VerticalAlignment="Bottom">
-                <Button x:Name="btn_MarkMatch" Content="Mark Match" Click="btn_MarkMatch_Click" Width="109" Height="20" Margin="0,0,0,6"/>
+            <!-- Right Column: Controls (Fixed Width) --> 
+            <Grid Grid.Column="2" Margin="0,41,10,19">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
 
-                <Button x:Name="btn_UnlinkFile" Content="Unlink File" Click="btn_UnlinkFile_Click" Width="109" Height="20" Margin="0,0,0,6"/>
+                <!-- Top controls: align with list_Files_in_Release top -->
+                <StackPanel Grid.Row="0" Orientation="Vertical">
+                    <ComboBox x:Name="cmb_SortMode" SelectionChanged="cmb_SortMode_SelectionChanged" Width="109" Height="23" Margin="0,0,0,6">
+                        <ComboBoxItem Content="by Release" />
+                        <ComboBoxItem Content="by Track Num" />
+                        <ComboBoxItem Content="by Track Name" />
+                        <ComboBoxItem Content="by Best" IsSelected="True" />
+                    </ComboBox>
 
-                <Button x:Name="btn_DeleteFile" Content="Delete File" Click="btn_DeleteFile_Click" Width="109" Height="20" Margin="0,0,0,6"/>
-
-                <StackPanel Orientation="Horizontal" Width="109" HorizontalAlignment="Left" Margin="0,0,0,6">
-                    <Button x:Name="btn_DeferImport" Content="Defer Import" Click="btn_DeferImport_Click" Width="89" Height="21"/>
-                    <Button x:Name="btn_OpenDeferFolder" Click="btn_OpenDeferFolder_Click" Width="20" Height="21">
-                        <TextBlock Text="📁" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Top"/>
-                    </Button>
+                    <Button x:Name="btn_AI_SearchMatch" Content="AI Match" Margin="0,0,0,6" Click="btn_AI_SearchMatch_Click" Height="20" Width="109" />
                 </StackPanel>
 
-                <StackPanel Orientation="Horizontal" Width="109" HorizontalAlignment="Right" Margin="0,0,0,6">
-                    <Button x:Name="btn_NotForImport" Content="Not For Import" Click="btn_NotForImport_Click" Width="89" Height="21"/>
-                    <Button x:Name="btn_OpenNotSelectedFolder" Click="btn_OpenNotSelectedFolder_Click" Width="20" Height="21">
-                        <TextBlock Text="📁" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Top"/>
-                    </Button>
+                <!-- Bottom controls: bottom aligned inside Grid -->
+                <StackPanel Grid.Row="2" Orientation="Vertical" VerticalAlignment="Bottom">
+                    <Button x:Name="btn_MarkMatch" Content="Mark Match" Click="btn_MarkMatch_Click" Width="109" Height="20" Margin="0,0,0,6"/>
+
+                    <Button x:Name="btn_UnlinkFile" Content="Unlink File" Click="btn_UnlinkFile_Click" Width="109" Height="20" Margin="0,0,0,6"/>
+
+                    <Button x:Name="btn_DeleteFile" Content="Delete File" Click="btn_DeleteFile_Click" Width="109" Height="20" Margin="0,0,0,6"/>
+
+                    <!-- Individual destination buttons - Move + Folder per row -->
+                    <ItemsControl x:Name="ic_DestinationButtons">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,0,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    
+                                    <!-- Move button -->
+                                    <Button Grid.Column="0" 
+                                            Content="{Binding Name, StringFormat='Move: {0}'}" 
+                                            Height="20" 
+                                            Margin="0,0,2,0"
+                                            Click="btn_MoveToDestination_Click"
+                                            Tag="{Binding}"
+                                            ToolTip="{Binding DestinationPath}">
+                                        <Button.Style>
+                                            <Style TargetType="Button">
+                                                <Setter Property="Background" Value="#FF373737"/>
+                                                <Setter Property="Foreground" Value="#FFDCDCDC"/>
+                                                <Setter Property="BorderBrush" Value="#FF505050"/>
+                                                <Style.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter Property="Background" Value="#FF414141"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsEnabled" Value="False">
+                                                        <Setter Property="Background" Value="#FF282828"/>
+                                                        <Setter Property="Foreground" Value="#FF646464"/>
+                                                    </Trigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Button.Style>
+                                    </Button>
+                                    
+                                    <!-- Folder button -->
+                                    <Button Grid.Column="1" 
+                                            Width="21" 
+                                            Height="20"
+                                            Click="btn_OpenFolderDestination_Click"
+                                            Tag="{Binding}"
+                                            ToolTip="{Binding DestinationPath, StringFormat='Open folder: {0}'}">
+                                        <Button.Style>
+                                            <Style TargetType="Button">
+                                                <Setter Property="Background" Value="#FF373737"/>
+                                                <Setter Property="Foreground" Value="#FFDCDCDC"/>
+                                                <Setter Property="BorderBrush" Value="#FF505050"/>
+                                                <Style.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter Property="Background" Value="#FF414141"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsEnabled" Value="False">
+                                                        <Setter Property="Background" Value="#FF282828"/>
+                                                        <Setter Property="Foreground" Value="#FF646464"/>
+                                                    </Trigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Button.Style>
+                                        <TextBlock Text="📁" FontSize="12"/>
+                                    </Button>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
                 </StackPanel>
-            </StackPanel>
+            </Grid>
         </Grid>
-
 
         <!-- GRID ROW 2 -->
 
@@ -222,8 +379,17 @@
             <ListView.ItemContainerStyle>
                 <Style TargetType="{x:Type ListViewItem}">
                     <Style.Setters>
-                        <Setter Property="Background" Value="{Binding Action, Converter={StaticResource ActionToBackgroundConverter}}"/>
-                        <Setter Property="Foreground" Value="{Binding Action, Converter={StaticResource ActionToForegroundConverter}}"/>
+                        <!-- Bind to the whole ProposedAction object so converter can access DestinationName -->
+                        <Setter Property="Background">
+                            <Setter.Value>
+                                <Binding Path="." Converter="{StaticResource ActionToBackgroundConverter}"/>
+                            </Setter.Value>
+                        </Setter>
+                        <Setter Property="Foreground">
+                            <Setter.Value>
+                                <Binding Path="." Converter="{StaticResource ActionToForegroundConverter}"/>
+                            </Setter.Value>
+                        </Setter>
                     </Style.Setters>
                     <Style.Triggers>
                         <!-- Failed import: highlight red -->
@@ -231,6 +397,19 @@
                             <Setter Property="Background" Value="Red"/>
                             <Setter Property="Foreground" Value="White"/>
                         </DataTrigger>
+                        
+                        <!-- Selection and hover states -->
+                        <MultiTrigger>
+                            <MultiTrigger.Conditions>
+                                <Condition Property="IsMouseOver" Value="True"/>
+                                <Condition Property="IsSelected" Value="False"/>
+                            </MultiTrigger.Conditions>
+                            <Setter Property="Background" Value="{DynamicResource ListViewItemHoverBrush}"/>
+                        </MultiTrigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter Property="Background" Value="{DynamicResource ListViewItemSelectionBrush}"/>
+                            <Setter Property="Foreground" Value="White"/>
+                        </Trigger>
                     </Style.Triggers>
                 </Style>
             </ListView.ItemContainerStyle>
@@ -272,12 +451,21 @@
             </Grid.ColumnDefinitions>
 
             <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                <Button x:Name="btn_CheckOllama" Content="Check Ollama" Click="btn_CheckOllama_Click" Height="20" MinWidth="90"/>
+                <Button x:Name="btn_ToggleSiftWindow" Click="btn_ToggleSiftWindow_Click" Height="20" Width="30" Margin="0,0,6,0">
+                    <TextBlock Text="🎶" FontSize="12" />
+                </Button>
+                <Button x:Name="btn_ToggleLogWindow" Click="btn_ToggleLogWindow_Click" Height="20" Width="30" Margin="0,0,6,0">
+                    <TextBlock Text="📓" FontSize="12" />
+                </Button>
+                <Button x:Name="btn_ToggleDarkMode" Click="btn_ToggleDarkMode_Click" Height="20" Width="46" Margin="0,0,6,0">
+                    <TextBlock Text="Dark" FontSize="12" />
+                </Button>
+                <Button x:Name="btn_CheckOllama" Content="Check Ollama" Click="btn_CheckOllama_Click" Height="20" MinWidth="90" Width="89"  Margin="0,0,6,0" />
                 <Button x:Name="btn_Settings" Content="Settings" Click="btn_Settings_Click" Height="20" MinWidth="60"/>
             </StackPanel>
         </Grid>
 
         <!-- Status Text at bottom -->
-        <TextBlock x:Name="txt_Status" Text="" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="10,0,0,10" Grid.Row="2" Height="16" Width="90" />
+        <TextBlock x:Name="txt_Status" Text="" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="10,0,0,10" Grid.Row="2" Height="20" Width="200" />
     </Grid>
 </Window>

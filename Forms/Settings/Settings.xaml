@@ -5,16 +5,72 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:LidarrCompanion"
         mc:Ignorable="d"
-        Title="Settings" Height="600" Width="1032">
+        Title="Settings" Height="700" Width="1200">
 
     <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="200"/>
+        </Grid.RowDefinitions>
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*"/>
             <ColumnDefinition Width="420" />
         </Grid.ColumnDefinitions>
 
-        <!-- Left: DataGrid (fills and provides scrollbars) -->
-        <Grid Grid.Column="0" Margin="10">
+        <!-- Top Left: DataGrid (fills and provides scrollbars) -->
+        <Grid Grid.Row="0" Grid.Column="0" Margin="10">
+            <Grid.Resources>
+                <!-- Template for color pair display -->
+                <DataTemplate x:Key="ColorPairDisplayTemplate">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="5"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        
+                        <Border Grid.Column="0" Background="{Binding LightModeValue}" BorderBrush="Gray" BorderThickness="1" CornerRadius="3" Padding="2" ToolTip="Light mode">
+                            <TextBlock Text="{Binding LightModeValue}" VerticalAlignment="Center" HorizontalAlignment="Center" FontSize="9"/>
+                        </Border>
+                        
+                        <Border Grid.Column="2" Background="{Binding DarkModeValue}" BorderBrush="Gray" BorderThickness="1" CornerRadius="3" Padding="2" ToolTip="Dark mode">
+                            <TextBlock Text="{Binding DarkModeValue}" VerticalAlignment="Center" HorizontalAlignment="Center" FontSize="9" Foreground="White"/>
+                        </Border>
+                    </Grid>
+                </DataTemplate>
+                
+                <!-- Template for single value display -->
+                <DataTemplate x:Key="SingleValueDisplayTemplate">
+                    <Border Background="{Binding ValueBrush}" BorderBrush="Gray" BorderThickness="1" CornerRadius="3" Padding="4">
+                        <TextBlock Text="{Binding Value}" VerticalAlignment="Center"/>
+                    </Border>
+                </DataTemplate>
+                
+                <!-- Template for color pair editing -->
+                <DataTemplate x:Key="ColorPairEditTemplate">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="5"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        
+                        <TextBox Grid.Column="0" Text="{Binding LightModeValue, UpdateSourceTrigger=PropertyChanged}" ToolTip="Light mode"/>
+                        <TextBox Grid.Column="2" Text="{Binding DarkModeValue, UpdateSourceTrigger=PropertyChanged}" ToolTip="Dark mode"/>
+                    </Grid>
+                </DataTemplate>
+                
+                <!-- Template for single value editing -->
+                <DataTemplate x:Key="SingleValueEditTemplate">
+                    <TextBox Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}"/>
+                </DataTemplate>
+                
+                <!-- Template selector -->
+                <local:SettingValueTemplateSelector x:Key="ValueTemplateSelector"
+                                                    ColorPairTemplate="{StaticResource ColorPairDisplayTemplate}"
+                                                    SingleValueTemplate="{StaticResource SingleValueDisplayTemplate}"/>
+            </Grid.Resources>
+            
             <DataGrid x:Name="SettingsGrid"
                       AutoGenerateColumns="False"
                       CanUserAddRows="False"
@@ -24,6 +80,10 @@
                       HorizontalAlignment="Stretch"
                       CellEditEnding="SettingsGrid_CellEditEnding"
                       IsReadOnly="False"
+                      EnableRowVirtualization="True"
+                      EnableColumnVirtualization="True"
+                      VirtualizingPanel.IsVirtualizing="True"
+                      VirtualizingPanel.VirtualizationMode="Recycling"
                       >
                 <DataGrid.RowStyle>
                     <Style TargetType="DataGridRow">
@@ -36,16 +96,102 @@
                     </Style>
                 </DataGrid.RowStyle>
                 <DataGrid.Columns>
-                    <DataGridTextColumn Header="Property" Binding="{Binding Category}" IsReadOnly="True"/>
-                    <DataGridTextColumn Header="Property" Binding="{Binding Name}" IsReadOnly="True"/>
-                    <DataGridTextColumn Header="Value" Binding="{Binding Value}" />
+                    <DataGridTextColumn Header="Category" Binding="{Binding Category}" IsReadOnly="True" Width="100"/>
+                    <DataGridTextColumn Header="Property" Binding="{Binding Name}" IsReadOnly="True" Width="150"/>
+                    <DataGridTemplateColumn Header="Value" Width="200">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <ContentPresenter Content="{Binding}" ContentTemplateSelector="{StaticResource ValueTemplateSelector}"/>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                        <DataGridTemplateColumn.CellEditingTemplate>
+                            <DataTemplate>
+                                <!-- Use ColorPairEditTemplate for color pairs, otherwise simple TextBox -->
+                                <ContentControl>
+                                    <ContentControl.Style>
+                                        <Style TargetType="ContentControl">
+                                            <Setter Property="Content">
+                                                <Setter.Value>
+                                                    <TextBox Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}"/>
+                                                </Setter.Value>
+                                            </Setter>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsColorPair}" Value="True">
+                                                    <Setter Property="ContentTemplate" Value="{StaticResource ColorPairEditTemplate}"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </ContentControl.Style>
+                                </ContentControl>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellEditingTemplate>
+                    </DataGridTemplateColumn>
                     <DataGridTextColumn Header="Description" Binding="{Binding Description}" IsReadOnly="True" Width="*"/>
                 </DataGrid.Columns>
             </DataGrid>
         </Grid>
 
-        <!-- Right: Status panel with boxes and connecting arrows -->
-        <Border Grid.Column="1" Margin="6" BorderBrush="LightGray" BorderThickness="1" CornerRadius="4" Padding="8">
+        <!-- Bottom Left: Import Destinations Management -->
+        <GroupBox Grid.Row="1" Grid.Column="0" Header="Import Destinations" Margin="10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                
+                <DataGrid x:Name="list_ImportDestinations" 
+                          Grid.Column="0"
+                          ItemsSource="{Binding ImportDestinationsCollection}"
+                          AutoGenerateColumns="False"
+                          CanUserAddRows="False"
+                          CanUserDeleteRows="False"
+                          CellEditEnding="list_ImportDestinations_CellEditEnding">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="110"/>
+                        <DataGridTextColumn Header="Destination Path" Binding="{Binding DestinationPath}" Width="*"/>
+                        <DataGridCheckBoxColumn Header="Backup" Binding="{Binding BackupFiles}" Width="60"/>
+                        <DataGridCheckBoxColumn Header="Copy" Binding="{Binding CopyFiles}" Width="60"/>
+                        <DataGridCheckBoxColumn Header="Require Artwork" Binding="{Binding RequireArtwork}" Width="80"/>
+                        <DataGridTemplateColumn Header="Color" Width="80">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <Border Background="{Binding Color}" BorderBrush="Gray" BorderThickness="1" CornerRadius="3" Height="20" Margin="2">
+                                        <TextBlock Text="{Binding Color}" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="9" Foreground="Black"/>
+                                    </Border>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                            <DataGridTemplateColumn.CellEditingTemplate>
+                                <DataTemplate>
+                                    <TextBox Text="{Binding Color, UpdateSourceTrigger=PropertyChanged}" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellEditingTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTemplateColumn Header="Dark" Width="80">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <Border Background="{Binding ColorDark}" BorderBrush="Gray" BorderThickness="1" CornerRadius="3" Height="20" Margin="2">
+                                        <TextBlock Text="{Binding ColorDark}" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="9" Foreground="White"/>
+                                    </Border>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                            <DataGridTemplateColumn.CellEditingTemplate>
+                                <DataTemplate>
+                                    <TextBox Text="{Binding ColorDark, UpdateSourceTrigger=PropertyChanged}" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellEditingTemplate>
+                        </DataGridTemplateColumn>
+                    </DataGrid.Columns>
+                </DataGrid>
+                
+                <StackPanel Grid.Column="1" Margin="5,0,0,0" VerticalAlignment="Center">
+                    <Button x:Name="btn_AddDestination" Content="Add" Width="80" Margin="0,0,0,5" Click="btn_AddDestination_Click"/>
+                    <Button x:Name="btn_RemoveDestination" Content="Remove" Width="80" Click="btn_RemoveDestination_Click"/>
+                </StackPanel>
+            </Grid>
+        </GroupBox>
+
+        <!-- Right: Status panel with boxes and connecting arrows (spans both rows) -->
+        <Border Grid.Row="0" Grid.RowSpan="2" Grid.Column="1" Margin="6" BorderBrush="LightGray" BorderThickness="1" CornerRadius="4" Padding="8">
             <!-- Use a Grid with two rows: main area and status bar -->
             <Grid>
                 <Grid.RowDefinitions>
@@ -56,39 +202,26 @@
                 <Grid Grid.Row="0">
                     <!-- Two-layer approach: canvas for arrows below, grid of boxes above -->
                     <Canvas x:Name="ArrowsCanvas" IsHitTestVisible="True" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Background="Transparent" Panel.ZIndex="0">
-                        <!-- Lines/arrows connecting centers of grid cells. Stroke will be bound to code-behind properties. -->
+                        <!-- Static lines connecting fixed boxes -->
+                        <Line x:Name="Line_SiftTracks_LidarrURL" MouseEnter="Arrow_MouseEnter" MouseLeave="Arrow_MouseLeave" StrokeThickness="3" Stroke="Gray" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
                         <Line x:Name="Line_LidarrURL_Releases" MouseEnter="Arrow_MouseEnter" MouseLeave="Arrow_MouseLeave" StrokeThickness="3" Stroke="Gray" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
                         <Line x:Name="Line_Releases_Import" MouseEnter="Arrow_MouseEnter" MouseLeave="Arrow_MouseLeave" StrokeThickness="3" Stroke="Gray" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
-                        <Line x:Name="Line_Releases_NotSelected" MouseEnter="Arrow_MouseEnter" MouseLeave="Arrow_MouseLeave" StrokeThickness="3" Stroke="Gray" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
-                        <Line x:Name="Line_Releases_Defer" MouseEnter="Arrow_MouseEnter" MouseLeave="Arrow_MouseLeave" StrokeThickness="3" Stroke="Gray" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
-
                         <Line x:Name="Line_LidarrURL_Backup" MouseEnter="Arrow_MouseEnter" MouseLeave="Arrow_MouseLeave" StrokeThickness="3" Stroke="Gray" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
                         <Line x:Name="Line_Import_Copy" MouseEnter="Arrow_MouseEnter" MouseLeave="Arrow_MouseLeave" StrokeThickness="3" Stroke="Gray" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
-                        <Line x:Name="Line_NotSelected_Copy" MouseEnter="Arrow_MouseEnter" MouseLeave="Arrow_MouseLeave" StrokeThickness="3" Stroke="Gray" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
-                        <!-- New lines for Defer connectivity -->
-                        <Line x:Name="Line_Defer_Backup" MouseEnter="Arrow_MouseEnter" MouseLeave="Arrow_MouseLeave" StrokeThickness="3" Stroke="Gray" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
-                        <Line x:Name="Line_Defer_Copy" MouseEnter="Arrow_MouseEnter" MouseLeave="Arrow_MouseLeave" StrokeThickness="3" Stroke="Gray" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
-                        <!-- New line: NotSelected -> Backup -->
-                        <Line x:Name="Line_NotSelected_Backup" MouseEnter="Arrow_MouseEnter" MouseLeave="Arrow_MouseLeave" StrokeThickness="3" Stroke="Gray" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
 
-                        <!-- Arrowhead polygons for each line -->
+                        <!-- Static arrowheads -->
+                        <Polygon x:Name="Head_SiftTracks_LidarrURL" Points="0,00,00,0" Fill="Gray" Panel.ZIndex="1" />
                         <Polygon x:Name="Head_LidarrURL_Releases" Points="0,00,00,0" Fill="Gray" Panel.ZIndex="1" />
                         <Polygon x:Name="Head_Releases_Import" Points="0,00,00,0" Fill="Gray" Panel.ZIndex="1" />
-                        <Polygon x:Name="Head_Releases_NotSelected" Points="0,00,00,0" Fill="Gray" Panel.ZIndex="1" />
-                        <Polygon x:Name="Head_Releases_Defer" Points="0,00,00,0" Fill="Gray" Panel.ZIndex="1" />
-
                         <Polygon x:Name="Head_LidarrURL_Backup" Points="0,00,00,0" Fill="Gray" Panel.ZIndex="1" />
                         <Polygon x:Name="Head_Import_Copy" Points="0,00,00,0" Fill="Gray" Panel.ZIndex="1" />
-                        <Polygon x:Name="Head_NotSelected_Copy" Points="0,00,00,0" Fill="Gray" Panel.ZIndex="1" />
-                        <!-- New arrowheads for Defer lines -->
-                        <Polygon x:Name="Head_Defer_Backup" Points="0,00,00,0" Fill="Gray" Panel.ZIndex="1" />
-                        <Polygon x:Name="Head_Defer_Copy" Points="0,00,00,0" Fill="Gray" Panel.ZIndex="1" />
-                        <!-- New arrowhead for NotSelected->Backup -->
-                        <Polygon x:Name="Head_NotSelected_Backup" Points="0,00,00,0" Fill="Gray" Panel.ZIndex="1" />
+                        
+                        <!-- Dynamic lines for destinations will be added programmatically -->
                     </Canvas>
 
                     <Grid x:Name="BoxesGrid" Panel.ZIndex="2">
                         <Grid.RowDefinitions>
+                            <RowDefinition Height="*" />
                             <RowDefinition Height="*" />
                             <RowDefinition Height="*" />
                             <RowDefinition Height="*" />
@@ -100,56 +233,70 @@
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
 
-                        <!-- Top Center: LidarrURL -->
-                        <Border x:Name="Box_LidarrURL" Grid.Row="0" Grid.Column="1" Margin="12" Padding="10" CornerRadius="6" Background="LightGray" MinHeight="80" MouseEnter="Box_MouseEnter" MouseLeave="Box_MouseLeave">
+                        <!-- Row 0 Center: Sift Tracks -->
+                        <Border x:Name="Box_SiftTracks" Grid.Row="0" Grid.Column="1" Margin="12" Padding="10" CornerRadius="6" Background="LightGray" MinHeight="80" MouseEnter="Box_MouseEnter" MouseLeave="Box_MouseLeave">
+                            <StackPanel>
+                                <TextBlock Text="Sift Tracks" FontWeight="Bold" HorizontalAlignment="Center"/>
+                                <TextBlock Text="🎶" FontSize="28" HorizontalAlignment="Center" Margin="6" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Row 1 Center: LidarrURL -->
+                        <Border x:Name="Box_LidarrURL" Grid.Row="1" Grid.Column="1" Margin="12" Padding="10" CornerRadius="6" Background="LightGray" MinHeight="80" MouseEnter="Box_MouseEnter" MouseLeave="Box_MouseLeave">
                             <StackPanel>
                                 <TextBlock Text="Lidarr URL" FontWeight="Bold" HorizontalAlignment="Center"/>
                                 <TextBlock Text="🔗" FontSize="28" HorizontalAlignment="Center" Margin="6" />
                             </StackPanel>
                         </Border>
 
-                        <!-- Row1 Center: LidarrReleases -->
-                        <Border x:Name="Box_LidarrReleases" Grid.Row="1" Grid.Column="1" Margin="12" Padding="10" CornerRadius="6" Background="LightGray" MinHeight="80" MouseEnter="Box_MouseEnter" MouseLeave="Box_MouseLeave">
+                        <!-- Row 2 Center: LidarrReleases -->
+                        <Border x:Name="Box_LidarrReleases" Grid.Row="2" Grid.Column="1" Margin="12" Padding="10" CornerRadius="6" Background="LightGray" MinHeight="80" MouseEnter="Box_MouseEnter" MouseLeave="Box_MouseLeave">
                             <StackPanel>
                                 <TextBlock Text="Lidarr Releases" FontWeight="Bold" HorizontalAlignment="Center"/>
                                 <TextBlock Text="🎵" FontSize="28" HorizontalAlignment="Center" Margin="6" />
                             </StackPanel>
                         </Border>
 
-                        <!-- Middle Left (now Row2): LidarrImport -->
-                        <Border x:Name="Box_LidarrImport" Grid.Row="2" Grid.Column="0" Margin="12" Padding="10" CornerRadius="6" Background="LightGray" MinHeight="80" MouseEnter="Box_MouseEnter" MouseLeave="Box_MouseLeave">
+                        <!-- Row 3 Left: LidarrImport -->
+                        <Border x:Name="Box_LidarrImport" Grid.Row="3" Grid.Column="0" Margin="12" Padding="10" CornerRadius="6" Background="LightGray" MinHeight="80" MouseEnter="Box_MouseEnter" MouseLeave="Box_MouseLeave">
                             <StackPanel>
                                 <TextBlock Text="Lidarr Import" FontWeight="Bold" HorizontalAlignment="Center"/>
                                 <TextBlock Text="📂" FontSize="28" HorizontalAlignment="Center" Margin="6" />
                             </StackPanel>
                         </Border>
 
-                        <!-- Middle Middle (Row2): NotSelected -->
-                        <Border x:Name="Box_NotSelected" Grid.Row="2" Grid.Column="1" Margin="12" Padding="10" CornerRadius="6" Background="LightGray" MinHeight="80" MouseEnter="Box_MouseEnter" MouseLeave="Box_MouseLeave">
-                            <StackPanel Height="76" VerticalAlignment="Bottom">
-                                <TextBlock Text="Not-Selected" FontWeight="Bold" HorizontalAlignment="Center"/>
-                                <TextBlock Text="🚫" FontSize="28" HorizontalAlignment="Center" Margin="6" />
-                            </StackPanel>
-                        </Border>
+                        <!-- Row 3 Middle and Right: Dynamic Destination Boxes -->
+                        <!-- These will be generated dynamically in code-behind -->
+                        <ItemsControl x:Name="DynamicDestinationBoxes" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <UniformGrid Rows="1" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border x:Name="DestBorder" Margin="12" Padding="10" CornerRadius="6" MinHeight="80" 
+                                            MouseEnter="DestinationBox_MouseEnter" MouseLeave="DestinationBox_MouseLeave"
+                                            Tag="{Binding}">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding Name}" FontWeight="Bold" HorizontalAlignment="Center" TextWrapping="Wrap"/>
+                                            <TextBlock Text="📦" FontSize="28" HorizontalAlignment="Center" Margin="6" />
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
 
-                        <!-- Middle Right (Row2): Defer -->
-                        <Border x:Name="Box_Defer" Grid.Row="2" Grid.Column="2" Margin="12" Padding="10" CornerRadius="6" Background="LightGray" MinHeight="80" MouseEnter="Box_MouseEnter" MouseLeave="Box_MouseLeave">
-                            <StackPanel>
-                                <TextBlock Text="Defer" FontWeight="Bold" HorizontalAlignment="Center" TextWrapping="Wrap"/>
-                                <TextBlock Text="⏸️" FontSize="28" HorizontalAlignment="Center" Margin="6" />
-                            </StackPanel>
-                        </Border>
-
-                        <!-- Bottom Left (Row3): BackupRootFolder -->
-                        <Border x:Name="Box_BackupRootFolder" Grid.Row="3" Grid.Column="0" Margin="12" Padding="10" CornerRadius="6" Background="LightGray" MinHeight="80" MouseEnter="Box_MouseEnter" MouseLeave="Box_MouseLeave">
+                        <!-- Row 4 Left: BackupRootFolder -->
+                        <Border x:Name="Box_BackupRootFolder" Grid.Row="4" Grid.Column="0" Margin="12" Padding="10" CornerRadius="6" Background="LightGray" MinHeight="80" MouseEnter="Box_MouseEnter" MouseLeave="Box_MouseLeave">
                             <StackPanel>
                                 <TextBlock Text="Backup Root" FontWeight="Bold" HorizontalAlignment="Center"/>
                                 <TextBlock Text="📁" FontSize="28" HorizontalAlignment="Center" Margin="6" />
                             </StackPanel>
                         </Border>
 
-                        <!-- Bottom Right (Row3): CopyImportedFiles -->
-                        <Border x:Name="Box_CopyImportedFiles" Grid.Row="3" Grid.Column="2" Margin="12" Padding="10" CornerRadius="6" Background="LightGray" MinHeight="80" MouseEnter="Box_MouseEnter" MouseLeave="Box_MouseLeave">
+                        <!-- Row 4 Right: CopyImportedFiles -->
+                        <Border x:Name="Box_CopyImportedFiles" Grid.Row="4" Grid.Column="2" Margin="12" Padding="10" CornerRadius="6" Background="LightGray" MinHeight="80" MouseEnter="Box_MouseEnter" MouseLeave="Box_MouseLeave">
                             <StackPanel>
                                 <TextBlock Text="Copy Files" FontWeight="Bold" HorizontalAlignment="Center" TextWrapping="Wrap"/>
                                 <!-- Use Segoe MDL2 Assets glyph for copy (U+E8C8) -->
@@ -161,7 +308,7 @@
                 </Grid>
 
                 <!-- Status bar row -->
-                <Border Grid.Row="1" BorderThickness="1,0,0,0" BorderBrush="LightGray" Padding="4" Background="WhiteSmoke">
+                <Border Grid.Row="1" BorderThickness="1,0,0,0" BorderBrush="LightGray" Padding="4">
                     <TextBlock x:Name="ArrowStatusText" Text="" VerticalAlignment="Center" />
                 </Border>
             </Grid>

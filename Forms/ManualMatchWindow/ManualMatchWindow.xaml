@@ -1,7 +1,7 @@
 <Window x:Class="LidarrCompanion.ManualMatchWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Select Artist" Height="400" Width="400" WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
+        Title="Select Artist" Height="400" Width="678" WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
         Loaded="Window_Loaded">
     <Grid Margin="8">
         <Grid.RowDefinitions>
@@ -9,18 +9,34 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <TextBlock x:Name="txt_Context" Grid.Row="0" TextWrapping="Wrap" Margin="0,0,0,8" />
 
         <DockPanel Grid.Row="1" Margin="0,0,0,0">
-            <TextBox x:Name="txt_Search" Width="210" HorizontalAlignment="Left" VerticalAlignment="Center" DockPanel.Dock="Left" />
+            <TextBox x:Name="txt_Search" Width="390" DockPanel.Dock="Left" />
             <Button x:Name="btn_SearchExternal" Content="Search External" Width="100" Margin="0,0,0,0" Click="btn_SearchExternal_Click" DockPanel.Dock="Right"/>
             <Button x:Name="btn_Reset" Content="Reset" Width="60" Margin="0,0,0,0" Click="btn_Reset_Click" DockPanel.Dock="Right" />
         </DockPanel>
 
-        <ListBox x:Name="list_Artists" Grid.Row="2" DisplayMemberPath="DisplayName" SelectionMode="Single" />
+        <Grid Grid.Row="2" Margin="0,0,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="180" />
+            </Grid.ColumnDefinitions>
+
+            <ListView x:Name="list_Artists" Grid.Column="0" SelectionMode="Single" Margin="0,0,0,0">
+                <ListView.View>
+                    <GridView>
+                        <GridViewColumn Header="Artist" Width="200" DisplayMemberBinding="{Binding DisplayName}" />
+                        <GridViewColumn Header="Description" Width="260" DisplayMemberBinding="{Binding Description}" />
+                    </GridView>
+                </ListView.View>
+            </ListView>
+
+            <Image x:Name="img_Art" Grid.Column="1" Margin="0,0,0,0" />
+
+        </Grid>
 
         <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
             <Button x:Name="btn_Ok" Content="OK" Width="80" Margin="0,0,8,0" Click="btn_Ok_Click" IsEnabled="False"/>

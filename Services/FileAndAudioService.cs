@@ -1,8 +1,13 @@
+using LidarrCompanion.Helpers;
+using LidarrCompanion.Models;
+using LidarrCompanion.Services;
+using System;
 using System.Diagnostics;
 using System.IO;
-using System.Windows.Media;
-using System;
+using System.Linq;
 using System.Text.RegularExpressions;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 
 namespace LidarrCompanion.Services
 {
@@ -14,6 +19,12 @@ namespace LidarrCompanion.Services
 
         public bool IsPlaying => _isPlaying;
 
+        public double Volume
+        {
+            get => _player.Volume;
+            set => _player.Volume = Math.Max(0, Math.Min(1, value)); // Clamp between 0 and 1
+        }
+
         public FileAndAudioService()
         {
             // nothing
@@ -22,7 +33,7 @@ namespace LidarrCompanion.Services
         // Play a file with optional server->local mapping. Throws exceptions when file not found or invalid.
         public void PlayMapped(string filePath, string? serverImportPath, string? localMapping)
         {
-            var resolved = ImportService.ResolveMappedPath(filePath, Models.SettingKey.LidarrImportPath, true);
+            var resolved = FileOperationsHelper.ResolveMappedPath(filePath, SettingKey.LidarrImportPath, true);
             if (string.IsNullOrWhiteSpace(resolved)) throw new ArgumentNullException(nameof(filePath));
             if (!File.Exists(resolved)) throw new FileNotFoundException("Audio file not found", resolved);
 
@@ -55,7 +66,7 @@ namespace LidarrCompanion.Services
         // Open the containing folder for a file path, resolving mapping if provided. Returns resolved folder path.
         public static string OpenContainingFolder(string filePath, string? serverImportPath, string? localMapping)
         {
-            var resolved = ImportService.ResolveMappedPath(filePath, Models.SettingKey.LidarrImportPath, true);
+            var resolved = FileOperationsHelper.ResolveMappedPath(filePath, SettingKey.LidarrImportPath, true);
             if (string.IsNullOrWhiteSpace(resolved)) throw new ArgumentNullException(nameof(filePath));
 
             // Normalize separators and get full path to avoid mixed slash issues
@@ -209,6 +220,155 @@ namespace LidarrCompanion.Services
             }
 
             return false;
+        }
+
+        // Common audio file extensions
+        // Note: .opus files may not play without additional codecs installed
+        public static readonly string[] AudioExtensions = new[]
+        {
+            ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus",
+            ".wma", ".wav", ".ape", ".wv", ".tta", ".mpc"
+        };
+
+        // Extract cover art from an audio file. Returns null if no cover art found.
+        public static ImageSource? ExtractCoverArt(string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+                return null;
+
+            try
+            {
+                using (var file = TagLib.File.Create(filePath))
+                {
+                    var pictures = file.Tag.Pictures;
+                    if (pictures == null || pictures.Length == 0)
+                        return null;
+
+                    // Get the first picture (usually the front cover)
+                    var picture = pictures[0];
+                    if (picture.Data == null || picture.Data.Count == 0)
+                        return null;
+
+                    using (var ms = new System.IO.MemoryStream(picture.Data.Data))
+                    {
+                        var bitmap = new BitmapImage();
+                        bitmap.BeginInit();
+                        bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                        bitmap.StreamSource = ms;
+                        bitmap.EndInit();
+                        bitmap.Freeze();
+                        return bitmap;
+                    }
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        // Extract metadata (artist, title, contributing artists) from an audio file
+        public static (string artist, string title, string contributingArtists) ExtractMetadata(string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+                return (string.Empty, string.Empty, string.Empty);
+
+            try
+            {
+                using (var file = TagLib.File.Create(filePath))
+                {
+                    var artist = file.Tag.FirstPerformer ?? file.Tag.FirstAlbumArtist ?? string.Empty;
+                    var title = file.Tag.Title ?? string.Empty;
+                    
+                    // Get contributing artists (all performers except the first one)
+                    var performers = file.Tag.Performers ?? Array.Empty<string>();
+                    var contributingArtists = string.Empty;
+                    
+                    if (performers.Length > 1)
+                    {
+                        // Join all performers except the first one
+                        contributingArtists = string.Join(", ", performers.Skip(1));
+                    }
+                    else if (performers.Length == 0 && file.Tag.AlbumArtists != null && file.Tag.AlbumArtists.Length > 0)
+                    {
+                        // If no performers but album artists exist, use those
+                        contributingArtists = string.Join(", ", file.Tag.AlbumArtists.Skip(1));
+                    }
+
+                    return (artist, title, contributingArtists);
+                }
+            }
+            catch
+            {
+                return (string.Empty, string.Empty, string.Empty);
+            }
+        }
+
+        /// <summary>
+        /// Save cover art to an audio file
+        /// </summary>
+        /// <param name="filePath">Path to the audio file</param>
+        /// <param name="imageData">Image data as byte array</param>
+        /// <returns>True if successful, false otherwise</returns>
+        public static bool SaveCoverArt(string filePath, byte[] imageData)
+        {
+            if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+                return false;
+
+            if (imageData == null || imageData.Length == 0)
+                return false;
+
+            try
+            {
+                using (var file = TagLib.File.Create(filePath))
+                {
+                    // Create picture
+                    var picture = new TagLib.Picture(imageData)
+                    {
+                        Type = TagLib.PictureType.FrontCover,
+                        Description = "Cover"
+                    };
+
+                    // Set the picture
+                    file.Tag.Pictures = new TagLib.IPicture[] { picture };
+                    file.Save();
+
+                    return true;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Save cover art to an audio file from a BitmapSource
+        /// </summary>
+        /// <param name="filePath">Path to the audio file</param>
+        /// <param name="image">BitmapSource image</param>
+        /// <returns>True if successful, false otherwise</returns>
+        public static bool SaveCoverArt(string filePath, System.Windows.Media.Imaging.BitmapSource image)
+        {
+            if (image == null)
+                return false;
+
+            try
+            {
+                // Convert BitmapSource to byte array
+                var encoder = new System.Windows.Media.Imaging.JpegBitmapEncoder { QualityLevel = 95 };
+                encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(image));
+
+                using (var ms = new MemoryStream())
+                {
+                    encoder.Save(ms);
+                    return SaveCoverArt(filePath, ms.ToArray());
+                }
+            }
+            catch
+            {
+                return false;
+            }
         }
     }
 }

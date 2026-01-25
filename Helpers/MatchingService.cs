@@ -376,8 +376,14 @@ namespace LidarrCompanion.Helpers
                 double minimalScore = 0.0;
                 double minCleanScore = 0.0;
 
-                var fileWords = fileBase.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).Select(w => w.Trim()).Where(w => w.Length > 0).ToArray();
-                var trackWords = trackReference.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).Select(w => w.Trim()).Where(w => w.Length > 0).ToArray();
+                var fileWords = Regex.Split(fileBase ?? string.Empty, "[^A-Za-z0-9]+")
+                    .Select(w => w.Trim())
+                    .Where(w => w.Length > 0)
+                    .ToArray();
+                var trackWords = Regex.Split(trackReference ?? string.Empty, "[^A-Za-z0-9]+")
+                    .Select(w => w.Trim())
+                    .Where(w => w.Length > 0)
+                    .ToArray();
 
                 // DIRECT: all words from fileBase appear in trackReference (order not required)
                 if (fileWords.Length > 0 && fileWords.All(fw => trackWords.Any(tw => string.Equals(fw, tw, StringComparison.OrdinalIgnoreCase))))

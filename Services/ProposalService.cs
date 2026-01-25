@@ -9,7 +9,7 @@ namespace LidarrCompanion.Services
 {
     public class ProposalService
     {
-        // New unified method to create a proposal action for NotForImport, Defer, Unlink, Delete
+        // New unified method to create a proposal action for NotForImport, Defer, Unlink, Delete, or MoveToDestination
         public void CreateProposedAction(
             LidarrCompanion.Helpers.ProposalActionType actionType,
             //What we are linking
@@ -18,8 +18,8 @@ namespace LidarrCompanion.Services
             //entries
             ObservableCollection<ProposedAction> proposedActions,
             ObservableCollection<LidarrManualImportFile> manualImportFiles,
-            ObservableCollection<LidarrQueueRecord> queueRecords
-            )
+            ObservableCollection<LidarrQueueRecord> queueRecords,
+            string? destinationName = null)
         {
                         
             // Remove any other proposals for this file (imports or related moves)
@@ -29,15 +29,6 @@ namespace LidarrCompanion.Services
                 var fileForEx = manualImportFiles.FirstOrDefault(f => f.Id == ex.FileId);
                 if (fileForEx != null) fileForEx.ProposedActionType = null;
                 proposedActions.Remove(ex);
-            }
-             
-
-            // Remove any existing proposals for this file
-            var existing = proposedActions.Where(p => p.FileId == selectedFile.Id).ToList();
-            foreach (var e in existing) {
-                var fileForE = manualImportFiles.FirstOrDefault(f => f.Id == e.FileId);
-                if (fileForE != null) fileForE.ProposedActionType = null;
-                proposedActions.Remove(e);
             }
 
             var originalRelease = currentQueueRecord is LidarrQueueRecord qr ? qr.Title : Path.GetFileName(selectedFile.Path) ?? string.Empty;
@@ -49,14 +40,13 @@ namespace LidarrCompanion.Services
                 FileId = selectedFile.Id,
                 Path = selectedFile.Path,
                 DownloadId = currentQueueRecord?.DownloadId ?? string.Empty,
-                Action = actionType
+                Action = actionType,
+                DestinationName = destinationName ?? string.Empty
             };
 
             proposedActions.Add(pa);
             selectedFile.ProposedActionType = actionType;
             return;
-            
-            
         }
 
         // Create a manual assignment proposal and sibling move-to-not-selected proposals
@@ -117,38 +107,8 @@ namespace LidarrCompanion.Services
 
             proposedActions.Add(newAction);
 
-            // Create move-to-not-selected proposals for other files in same folder
-            try
-            {
-                var notSelectedRoot = LidarrCompanion.Models.AppSettings.GetValue(LidarrCompanion.Models.SettingKey.NotSelectedPath);
-                var selectedParent = Path.GetDirectoryName(selectedFile.Path) ?? string.Empty;
-                foreach (var file in manualImportFiles)
-                {
-                    if (file.Id == selectedFile.Id) continue;
-                    var otherParent = Path.GetDirectoryName(file.Path) ?? string.Empty;
-                    if (string.Equals(selectedParent, otherParent, StringComparison.OrdinalIgnoreCase))
-                    {
-                        var existing = proposedActions.FirstOrDefault(a => a.FileId == file.Id);
-                        if (existing == null)
-                        {
-                            var pa = new ProposedAction
-                            {
-                                OriginalFileName = file.Name,
-                                OriginalRelease = originalRelease,
-                                FileId = file.Id,
-                                Path = file.Path,
-                                Action = LidarrCompanion.Helpers.ProposalActionType.NotForImport
-                            };
-                            proposedActions.Add(pa);
-                            file.ProposedActionType = ProposalActionType.NotForImport;
-                        }
-                    }
-                }
-            }
-            catch
-            {
-                // ignore
-            }
+            // Note: Auto-creation of NotForImport proposals for sibling files has been removed
+            // Users should now use the dynamic destination "Move To" feature for unselected files
 
             return newAction;
         }

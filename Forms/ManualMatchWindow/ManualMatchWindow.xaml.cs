@@ -1,7 +1,9 @@
 using LidarrCompanion.Helpers;
+using LidarrCompanion.Models;
 using System.Collections.ObjectModel;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Media.Imaging;
 
 namespace LidarrCompanion
 {
@@ -19,6 +21,8 @@ namespace LidarrCompanion
 
         public ManualMatchWindow(IEnumerable<LidarrArtist> candidates, string releasePath)
         {
+
+           
             InitializeComponent();
             _originalContext = string.IsNullOrWhiteSpace(releasePath) ? "Internal Artists" : $"{releasePath} (Internal Artists)";
             txt_Context.Text = _originalContext;
@@ -34,7 +38,37 @@ namespace LidarrCompanion
             // Initially show internal items
             list_Artists.ItemsSource = _internalItems;
 
-            list_Artists.SelectionChanged += (s, e) => btn_Ok.IsEnabled = list_Artists.SelectedItem != null;
+            // Selection changed: enable OK button and update image preview
+            list_Artists.SelectionChanged += (s, e) =>
+            {
+                btn_Ok.IsEnabled = list_Artists.SelectedItem != null;
+
+                if (list_Artists.SelectedItem is ManualMatchItem sel && sel.Images != null && sel.Images.Count > 0)
+                {
+                    var url = sel.Images.FirstOrDefault(u => !string.IsNullOrWhiteSpace(u));
+                    if (!string.IsNullOrWhiteSpace(url))
+                    {
+                        try
+                        {
+                            string LidarrURL = AppSettings.GetValue(SettingKey.LidarrURL);
+                            img_Art.Source = new BitmapImage(new Uri(LidarrURL + url, UriKind.Absolute));
+                        }
+                        catch
+                        {
+                            img_Art.Source = null;
+                        }
+                    }
+                    else
+                    {
+                        img_Art.Source = null;
+                    }
+                }
+                else
+                {
+                    img_Art.Source = null;
+                }
+            };
+
             list_Artists.MouseDoubleClick += (s, e) =>
             {
                 if (list_Artists.SelectedItem is ManualMatchItem mi && mi.Artist != null && !mi.IsExternal)
@@ -71,6 +105,9 @@ namespace LidarrCompanion
             // Autofocus the search box when dialog opens
             txt_Search.Focus();
             txt_Search.SelectAll();
+
+            // Apply theme for this window (borderless style already applied in constructor)
+            Helpers.ThemeManager.ApplyTheme(this);
         }
 
         private void Txt_Search_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
@@ -80,7 +117,7 @@ namespace LidarrCompanion
             // If external results are currently visible or we have external items and a search term, show filtered external
             if (list_Artists.ItemsSource == _externalItems || (_externalItems.Count > 0 && !string.IsNullOrWhiteSpace(term)))
             {
-                var filtered = _externalItems.Where(i => i.DisplayName.Contains(term, System.StringComparison.OrdinalIgnoreCase)).ToList();
+                var filtered = _externalItems.Where(i => i.DisplayName.Contains(term, System.StringComparison.OrdinalIgnoreCase) || (!string.IsNullOrWhiteSpace(i.Description) && i.Description.Contains(term, System.StringComparison.OrdinalIgnoreCase))).ToList();
                 list_Artists.ItemsSource = filtered;
             }
             else
@@ -143,7 +180,91 @@ namespace LidarrCompanion
                     {
                         using var doc = JsonDocument.Parse(r);
                         var name = doc.RootElement.TryGetProperty("artistName", out var an) && an.ValueKind == JsonValueKind.String ? an.GetString() ?? r : r;
-                        var item = new ManualMatchItem { IsExternal = true, DisplayName = name, RawJson = r };
+
+                        // Extract URLs from a "links" array if present
+                        var links = new List<string>();
+                        if (doc.RootElement.TryGetProperty("links", out var linksEl) && linksEl.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var le in linksEl.EnumerateArray())
+                            {
+                                try
+                                {
+                                    if (le.ValueKind == JsonValueKind.Object)
+                                    {
+                                        if (le.TryGetProperty("url", out var u) && u.ValueKind == JsonValueKind.String)
+                                            links.Add(u.GetString()!);
+                                        else if (le.TryGetProperty("URL", out var u2) && u2.ValueKind == JsonValueKind.String)
+                                            links.Add(u2.GetString()!);
+                                        else
+                                        {
+                                            foreach (var prop in le.EnumerateObject())
+                                            {
+                                                if (prop.Value.ValueKind == JsonValueKind.String)
+                                                {
+                                                    links.Add(prop.Value.GetString()!);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    else if (le.ValueKind == JsonValueKind.String)
+                                    {
+                                        links.Add(le.GetString()!);
+                                    }
+                                }
+                                catch
+                                {
+                                    // ignore malformed link entries
+                                }
+                            }
+                        }
+
+                        var images = new List<string>();
+                        if (doc.RootElement.TryGetProperty("images", out var imagesEl) && imagesEl.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var ie in imagesEl.EnumerateArray())
+                            {
+                                try
+                                {
+                                    if (ie.ValueKind == JsonValueKind.Object)
+                                    {
+                                        if (ie.TryGetProperty("url", out var iu) && iu.ValueKind == JsonValueKind.String)
+                                            images.Add(iu.GetString()!);
+                                        else if (ie.TryGetProperty("URL", out var iu2) && iu2.ValueKind == JsonValueKind.String)
+                                            images.Add(iu2.GetString()!);
+                                        else
+                                        {
+                                            foreach (var prop in ie.EnumerateObject())
+                                            {
+                                                if (prop.Value.ValueKind == JsonValueKind.String)
+                                                {
+                                                    images.Add(prop.Value.GetString()!);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    else if (ie.ValueKind == JsonValueKind.String)
+                                    {
+                                        images.Add(ie.GetString()!);
+                                    }
+                                }
+                                catch
+                                {
+                                    // ignore malformed image entries
+                                }
+                            }
+                        }
+
+                        var description = doc.RootElement.TryGetProperty("disambiguation", out var dis) && dis.ValueKind == JsonValueKind.String ? dis.GetString() ?? string.Empty : string.Empty;
+
+                        if (string.IsNullOrWhiteSpace(description))
+                        {
+                            if (links.Count > 0)
+                                description = $"{links.Count} link(s)";
+                        }
+
+                        var item = new ManualMatchItem { IsExternal = true, DisplayName = name, Description = description, RawJson = r, Links = links, Images = images };
                         _externalItems.Add(item);
                     }
                     catch
@@ -259,7 +380,10 @@ namespace LidarrCompanion
     {
         public bool IsExternal { get; set; }
         public string DisplayName { get; set; } = string.Empty;
+        public string Description { get; set; } = string.Empty;
         public string RawJson { get; set; } = string.Empty;
         public LidarrArtist? Artist { get; set; }
+        public List<string> Links { get; set; } = new();
+        public List<string> Images{ get; set; } = new();
     }
 }

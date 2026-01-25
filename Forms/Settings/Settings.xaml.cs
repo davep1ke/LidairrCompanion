@@ -7,14 +7,35 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Shapes;
+using System.Windows.Threading;
 using LidarrCompanion.Models;
 using System.Linq;
 
 namespace LidarrCompanion
 {
+    /// <summary>
+    /// Selects appropriate DataTemplate based on whether setting is a color pair or not
+    /// This is much more efficient than nested visibility bindings for DataGrid virtualization
+    /// </summary>
+    public class SettingValueTemplateSelector : DataTemplateSelector
+    {
+        public DataTemplate? ColorPairTemplate { get; set; }
+        public DataTemplate? SingleValueTemplate { get; set; }
+
+        public override DataTemplate? SelectTemplate(object item, DependencyObject container)
+        {
+            if (item is SettingItem settingItem)
+            {
+                return settingItem.IsColorPair ? ColorPairTemplate : SingleValueTemplate;
+            }
+            return base.SelectTemplate(item, container);
+        }
+    }
+
     public partial class Settings : Window
     {
         public ObservableCollection<SettingItem> SettingsCollection { get; set; }
+        public ObservableCollection<ImportDestination> ImportDestinationsCollection { get; set; }
 
         // Brushes
         private readonly Brush BrushGreen = new SolidColorBrush(Color.FromRgb(76,175,80));
@@ -23,173 +44,282 @@ namespace LidarrCompanion
         private readonly Brush BrushLightGray = new SolidColorBrush(Color.FromRgb(211,211,211));
         private readonly Brush BrushGray = new SolidColorBrush(Color.FromRgb(169,169,169));
 
-        // prevent re-entrant PositionArrows
         private bool _isPositioning = false;
-        // whether initial layout has completed
         private bool _initialLayoutDone = false;
+
+        // Debounce timer to prevent excessive arrow repositioning during resize
+        private DispatcherTimer? _positionArrowsTimer;
+
+        // Track dynamic lines so we can remove them
+        private System.Collections.Generic.List<Line> _dynamicLines = new System.Collections.Generic.List<Line>();
+        private System.Collections.Generic.List<Polygon> _dynamicHeads = new System.Collections.Generic.List<Polygon>();
+
+        // Mapping of line name to friendly label and involved setting keys
+        private readonly System.Collections.Generic.Dictionary<string, (string friendly, SettingKey[] keys)> _lineInfo = new System.Collections.Generic.Dictionary<string, (string, SettingKey[])>(StringComparer.OrdinalIgnoreCase)
+        {
+            { "Line_SiftTracks_LidarrURL", ("Sift Tracks → Lidarr", new[]{ SettingKey.SiftFolder, SettingKey.LidarrURL, SettingKey.LidarrAPIKey }) },
+            { "Line_LidarrURL_Releases", ("Lidarr → Releases", new[]{ SettingKey.LidarrURL, SettingKey.LidarrAPIKey }) },
+            { "Line_Releases_Import", ("Releases → Import", new[]{ SettingKey.LidarrImportPath, SettingKey.LidarrImportPathLocal }) },
+            { "Line_LidarrURL_Backup", ("Import → Backup", new[]{ SettingKey.LidarrImportPath, SettingKey.BackupFilesBeforeImport, SettingKey.BackupRootFolder }) },
+            { "Line_Import_Copy", ("Import → Copy", new[]{ SettingKey.LidarrImportPath, SettingKey.CopyImportedFiles, SettingKey.CopyImportedFilesPath }) }
+        };
+
+        // Mapping boxes to friendly names + setting keys to highlight
+        private readonly System.Collections.Generic.Dictionary<string, (string friendly, SettingKey[] keys)> _boxInfo = new System.Collections.Generic.Dictionary<string, (string, SettingKey[])>(StringComparer.OrdinalIgnoreCase)
+        {
+            { "Box_SiftTracks", ("Sift Tracks", new[]{ SettingKey.SiftFolder }) },
+            { "Box_LidarrURL", ("Lidarr URL", new[]{ SettingKey.LidarrURL, SettingKey.LidarrAPIKey }) },
+            { "Box_LidarrReleases", ("Lidarr Releases", new[]{ SettingKey.LidarrImportPath, SettingKey.LidarrImportPathLocal }) },
+            { "Box_LidarrImport", ("Lidarr Library", new[]{ SettingKey.LidarrLibraryPath, SettingKey.LidarrLibraryPathLocal }) },
+            { "Box_BackupRootFolder", ("Backup Root", new[]{ SettingKey.BackupRootFolder, SettingKey.BackupFilesBeforeImport }) },
+            { "Box_CopyImportedFiles", ("Copy Files", new[]{ SettingKey.CopyImportedFiles, SettingKey.CopyImportedFilesPath }) }
+        };
+
+        // Keep track of previously hovered element visual state
+        private Line? _prevHoveredLine = null;
+        private Brush? _prevLineStroke = null;
+        private double _prevLineThickness = 0;
+        private Border? _prevHoveredBox = null;
+        private Brush? _prevBoxBorderBrush = null;
+        private Thickness _prevBoxBorderThickness = new Thickness(0);
 
         public Settings()
         {
-            // Create editable collection for DataGrid
             SettingsCollection = AppSettings.Current.ToCollection();
+            ImportDestinationsCollection = new ObservableCollection<ImportDestination>(AppSettings.Current.ImportDestinations);
+            
+            foreach (var dest in ImportDestinationsCollection)
+                dest.PropertyChanged += Destination_PropertyChanged;
+            
             DataContext = this;
             InitializeComponent();
+            
+            DynamicDestinationBoxes.ItemsSource = ImportDestinationsCollection;
+            
+            ImportDestinationsCollection.CollectionChanged += (s, e) => 
+            {
+                if (e.NewItems != null)
+                    foreach (ImportDestination dest in e.NewItems)
+                        dest.PropertyChanged += Destination_PropertyChanged;
+                
+                if (e.OldItems != null)
+                    foreach (ImportDestination dest in e.OldItems)
+                        dest.PropertyChanged -= Destination_PropertyChanged;
+                
+                Dispatcher.BeginInvoke(new Action(() => RefreshStatusPanel()), System.Windows.Threading.DispatcherPriority.Background);
+            };
 
             Loaded += Settings_Loaded;
-            SizeChanged += (s, e) => PositionArrows();
-            // Use a one-shot LayoutUpdated handler to perform initial positioning after WPF completes layout
+            SizeChanged += Settings_SizeChanged;
             LayoutUpdated += InitialLayoutUpdatedHandler;
+
+            // Initialize debounce timer for arrow positioning
+            _positionArrowsTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(150) // Wait 150ms after last resize before redrawing
+            };
+            _positionArrowsTimer.Tick += (s, e) =>
+            {
+                _positionArrowsTimer.Stop();
+                PositionArrows();
+            };
+        }
+
+        private void Settings_SizeChanged(object? sender, SizeChangedEventArgs e)
+        {
+            // Restart the timer - only draws arrows after user stops resizing for 150ms
+            _positionArrowsTimer?.Stop();
+            _positionArrowsTimer?.Start();
         }
 
         private void InitialLayoutUpdatedHandler(object? sender, EventArgs e)
         {
-            // Ensure we only run once to avoid continuous calls
             if (_initialLayoutDone) return;
             _initialLayoutDone = true;
-
-            // Unsubscribe to avoid repeated calls; SizeChanged will still reposition later
             LayoutUpdated -= InitialLayoutUpdatedHandler;
-
-            // Do the initial positioning
             PositionArrows();
         }
 
         private void Settings_Loaded(object sender, RoutedEventArgs e)
         {
             RefreshStatusPanel();
-            // PositionArrows will be called by InitialLayoutUpdatedHandler when layout is ready
+            Helpers.ThemeManager.ApplyTheme(this);
         }
 
         protected override void OnClosing(CancelEventArgs e)
         {
             base.OnClosing(e);
-            // Update AppSettings from collection
             AppSettings.Current.UpdateFromCollection(SettingsCollection);
+            AppSettings.Current.ImportDestinations = ImportDestinationsCollection.ToList();
             AppSettings.Save();
         }
 
         private void SettingsGrid_CellEditEnding(object sender, DataGridCellEditEndingEventArgs e)
         {
-            // Commit edits to collection
-            if (e.EditAction == DataGridEditAction.Commit)
-            {
-                // Force the binding to update source
-                var tb = e.EditingElement as TextBox;
-                if (tb != null)
-                {
-                    var binding = tb.GetBindingExpression(TextBox.TextProperty);
-                    binding?.UpdateSource();
-                }
+            if (e.EditAction != DataGridEditAction.Commit) return;
 
-                // Update underlying settings and refresh visuals
-                AppSettings.Current.UpdateFromCollection(SettingsCollection);
+            CommitEditingElement(e.EditingElement);
+            AppSettings.Current.UpdateFromCollection(SettingsCollection);
+            AppSettings.Save();
+            Dispatcher.BeginInvoke(new Action(() => RefreshStatusPanel()), System.Windows.Threading.DispatcherPriority.Background);
+        }
+
+        private void list_ImportDestinations_CellEditEnding(object sender, DataGridCellEditEndingEventArgs e)
+        {
+            if (e.EditAction != DataGridEditAction.Commit) return;
+
+            CommitEditingElement(e.EditingElement);
+            Dispatcher.BeginInvoke(new Action(() => 
+            {
+                AppSettings.Current.ImportDestinations = ImportDestinationsCollection.ToList();
                 AppSettings.Save();
+                RefreshStatusPanel();
+            }), System.Windows.Threading.DispatcherPriority.Background);
+        }
+
+        private void CommitEditingElement(FrameworkElement element)
+        {
+            if (element is TextBox tb)
+                tb.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
+            else if (element is CheckBox cb)
+                cb.GetBindingExpression(CheckBox.IsCheckedProperty)?.UpdateSource();
+        }
+
+        private void btn_AddDestination_Click(object sender, RoutedEventArgs e)
+        {
+            var newDest = new ImportDestination
+            {
+                Name = $"Destination {ImportDestinationsCollection.Count + 1}",
+                DestinationPath = string.Empty,
+                BackupFiles = false,
+                CopyFiles = false,
+                RequireArtwork = false
+            };
+            ImportDestinationsCollection.Add(newDest);
+            newDest.PropertyChanged += Destination_PropertyChanged;
+            RefreshStatusPanel();
+        }
+
+        private void btn_RemoveDestination_Click(object sender, RoutedEventArgs e)
+        {
+            if (list_ImportDestinations.SelectedItem is not ImportDestination selected) return;
+            
+            var result = MessageBox.Show($"Remove destination '{selected.Name}'?", "Confirm", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (result == MessageBoxResult.Yes)
+            {
+                selected.PropertyChanged -= Destination_PropertyChanged;
+                ImportDestinationsCollection.Remove(selected);
                 RefreshStatusPanel();
             }
         }
 
-        // Mapping of line name to friendly label and involved setting keys
-        private readonly System.Collections.Generic.Dictionary<string, (string friendly, SettingKey[] keys)> _lineInfo = new System.Collections.Generic.Dictionary<string, (string, SettingKey[])>(StringComparer.OrdinalIgnoreCase)
+        private void Destination_PropertyChanged(object? sender, PropertyChangedEventArgs e)
         {
-            { "Line_LidarrURL_Releases", ("Lidarr → Releases", new[]{ SettingKey.LidarrURL, SettingKey.LidarrAPIKey }) },
-            { "Line_Releases_Import", ("Releases → Import", new[]{ SettingKey.LidarrImportPath, SettingKey.LidarrImportPathLocal }) },
-            { "Line_Releases_NotSelected", ("Releases → Not Selected", new[]{ SettingKey.LidarrImportPath, SettingKey.NotSelectedPath }) },
-            { "Line_Releases_Defer", ("Releases → Defer", new[]{ SettingKey.DeferDestinationPath }) },
-            { "Line_LidarrURL_Backup", ("Import → Backup", new[]{ SettingKey.LidarrImportPath, SettingKey.BackupFilesBeforeImport, SettingKey.BackupRootFolder }) },
-            { "Line_Import_Copy", ("Import → Copy", new[]{ SettingKey.LidarrImportPath, SettingKey.CopyImportedFiles, SettingKey.CopyImportedFilesPath }) },
-            { "Line_NotSelected_Copy", ("Not Selected → Copy", new[]{ SettingKey.NotSelectedPath, SettingKey.CopyNotSelectedFiles, SettingKey.CopyImportedFilesPath }) },
-            { "Line_Defer_Backup", ("Defer → Backup", new[]{ SettingKey.DeferDestinationPath, SettingKey.BackupDeferredFiles, SettingKey.BackupRootFolder }) },
-            { "Line_Defer_Copy", ("Defer → Copy", new[]{ SettingKey.DeferDestinationPath, SettingKey.CopyDeferredFiles, SettingKey.CopyImportedFilesPath }) },
-            { "Line_NotSelected_Backup", ("Not Selected → Backup", new[]{ SettingKey.NotSelectedPath, SettingKey.BackupNotSelectedFiles, SettingKey.BackupRootFolder }) }
-        };
+            Dispatcher.BeginInvoke(new Action(() => RefreshStatusPanel()), System.Windows.Threading.DispatcherPriority.Background);
+        }
 
-        // Mapping boxes to friendly names + setting keys to highlight
-        private readonly System.Collections.Generic.Dictionary<string, (string friendly, SettingKey[] keys)> _boxInfo = new System.Collections.Generic.Dictionary<string, (string, SettingKey[])>(StringComparer.OrdinalIgnoreCase)
-        {
-            { "Box_LidarrURL", ("Lidarr URL", new[]{ SettingKey.LidarrURL, SettingKey.LidarrAPIKey }) },
-            // Releases box highlights import settings only
-            { "Box_LidarrReleases", ("Lidarr Releases", new[]{ SettingKey.LidarrImportPath, SettingKey.LidarrImportPathLocal }) },
-            // Rename import box to represent the library root
-            { "Box_LidarrImport", ("Lidarr Library", new[]{ SettingKey.LidarrLibraryPath, SettingKey.LidarrLibraryPathLocal }) },
-            { "Box_NotSelected", ("Not-Selected", new[]{ SettingKey.NotSelectedPath }) },
-            { "Box_Defer", ("Defer", new[]{ SettingKey.DeferDestinationPath, SettingKey.CopyDeferredFiles, SettingKey.BackupDeferredFiles }) },
-            { "Box_BackupRootFolder", ("Backup Root", new[]{ SettingKey.BackupRootFolder, SettingKey.BackupFilesBeforeImport }) },
-            { "Box_CopyImportedFiles", ("Copy Files", new[]{ SettingKey.CopyImportedFiles, SettingKey.CopyImportedFilesPath }) }
-        };
-
-        // Keep track of previously hovered line visual state
-        private Line? _prevHoveredLine = null;
-        private Brush? _prevLineStroke = null;
-        private double _prevLineThickness = 0;
-
-        // Keep track of previously hovered box visual state
-        private Border? _prevHoveredBox = null;
-        private Brush? _prevBoxBorderBrush = null;
-        private Thickness _prevBoxBorderThickness = new Thickness(0);
+        #region Mouse Hover Handlers
 
         private void Arrow_MouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
         {
-            var tb = this.FindName("ArrowStatusText") as TextBlock;
-            if (tb == null) return;
-            if (!(sender is Line l) || string.IsNullOrWhiteSpace(l.Name))
-            {
-                tb.Text = string.Empty;
-                return;
-            }
+            if (sender is not Line l || string.IsNullOrWhiteSpace(l.Name)) return;
 
-            // Friendly name
-            if (_lineInfo.TryGetValue(l.Name, out var info))
-            {
-                tb.Text = info.friendly;
-            }
-            else tb.Text = l.Name;
-
-            // Outline effect: store previous stroke and thickness and set black thicker stroke
-            _prevHoveredLine = l;
-            _prevLineStroke = l.Stroke;
-            _prevLineThickness = l.StrokeThickness;
-            l.Stroke = Brushes.Black;
-            l.StrokeThickness = Math.Max(4, l.StrokeThickness + 2);
-
-            // Highlight involved settings
-            HighlightSettings(info.keys, true);
+            var statusText = _lineInfo.TryGetValue(l.Name, out var info) ? info.friendly : l.Name;
+            UpdateStatusText(statusText);
+            ApplyLineHoverEffect(l);
+            
+            if (info.keys != null)
+                HighlightSettings(info.keys, true);
         }
 
         private void Arrow_MouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
         {
-            var tb = this.FindName("ArrowStatusText") as TextBlock;
-            if (tb == null) return;
-            tb.Text = string.Empty;
+            ClearStatusText();
+            RemoveLineHoverEffect();
+            HighlightSettings(null, false);
+        }
 
+        private void Box_MouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
+        {
+            if (sender is not Border b || string.IsNullOrWhiteSpace(b.Name)) return;
+
+            var statusText = _boxInfo.TryGetValue(b.Name, out var info) ? info.friendly : b.Name;
+            UpdateStatusText(statusText);
+            ApplyBoxHoverEffect(b);
+            
+            if (info.keys != null)
+                HighlightSettings(info.keys, true);
+        }
+
+        private void Box_MouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
+        {
+            ClearStatusText();
+            RemoveBoxHoverEffect(sender as Border);
+            HighlightSettings(null, false);
+        }
+
+        private void DestinationBox_MouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
+        {
+            if (sender is not Border box || box.Tag is not ImportDestination dest) return;
+
+            UpdateStatusText($"Destination: {dest.Name}");
+            ApplyBoxHoverEffect(box);
+        }
+
+        private void DestinationBox_MouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
+        {
+            ClearStatusText();
+            RemoveBoxHoverEffect(sender as Border);
+        }
+
+        private void DynamicArrow_MouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
+        {
+            if (sender is not Line l || l.Tag is not string tag) return;
+
+            var statusText = tag.Replace("Line_", "").Replace("_", " → ");
+            UpdateStatusText(statusText);
+            ApplyLineHoverEffect(l);
+        }
+
+        private void DynamicArrow_MouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
+        {
+            ClearStatusText();
+            RemoveLineHoverEffect();
+        }
+
+        private void UpdateStatusText(string text)
+        {
+            if (this.FindName("ArrowStatusText") is TextBlock tb)
+                tb.Text = text;
+        }
+
+        private void ClearStatusText()
+        {
+            if (this.FindName("ArrowStatusText") is TextBlock tb)
+                tb.Text = string.Empty;
+        }
+
+        private void ApplyLineHoverEffect(Line line)
+        {
+            _prevHoveredLine = line;
+            _prevLineStroke = line.Stroke;
+            _prevLineThickness = line.StrokeThickness;
+            line.Stroke = Brushes.Black;
+            line.StrokeThickness = Math.Max(4, line.StrokeThickness + 2);
+        }
+
+        private void RemoveLineHoverEffect()
+        {
             if (_prevHoveredLine != null)
             {
                 _prevHoveredLine.Stroke = _prevLineStroke;
                 _prevHoveredLine.StrokeThickness = _prevLineThickness;
                 _prevHoveredLine = null;
             }
-
-            // Clear highlights
-            HighlightSettings(null, false);
         }
 
-        private void Box_MouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
+        private void ApplyBoxHoverEffect(Border box)
         {
-            var tb = this.FindName("ArrowStatusText") as TextBlock;
-            if (tb == null) return;
-            Border box = sender as Border ?? (this.FindName((sender as FrameworkElement)?.Name ?? string.Empty) as Border);
-            if (box == null || string.IsNullOrWhiteSpace(box.Name))
-            {
-                tb.Text = string.Empty; return;
-            }
-
-            if (_boxInfo.TryGetValue(box.Name, out var info))
-            {
-                tb.Text = info.friendly;
-                HighlightSettings(info.keys, true);
-            }
-            else tb.Text = box.Name;
-
-            // Outline the box
             _prevHoveredBox = box;
             _prevBoxBorderBrush = box.BorderBrush;
             _prevBoxBorderThickness = box.BorderThickness;
@@ -197,341 +327,387 @@ namespace LidarrCompanion
             box.BorderThickness = new Thickness(2);
         }
 
-        private void Box_MouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
+        private void RemoveBoxHoverEffect(Border? box)
         {
-            var tb = this.FindName("ArrowStatusText") as TextBlock;
-            if (tb != null) tb.Text = string.Empty;
-
-            if (_prevHoveredBox != null)
+            if (_prevHoveredBox != null && (box == null || _prevHoveredBox == box))
             {
                 _prevHoveredBox.BorderBrush = _prevBoxBorderBrush;
                 _prevHoveredBox.BorderThickness = _prevBoxBorderThickness;
                 _prevHoveredBox = null;
             }
-
-            HighlightSettings(null, false);
         }
+
+        #endregion
+
+        #region Settings Highlighting
+
+        private void HighlightSettings(SettingKey[]? keys, bool highlight)
+        {
+            foreach (var si in SettingsCollection)
+                si.IsHighlighted = false;
+
+            if (keys == null || !highlight) return;
+
+            var keyNames = keys.Select(k => k.ToString()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var si in SettingsCollection)
+                if (keyNames.Contains(si.Name)) 
+                    si.IsHighlighted = true;
+        }
+
+        #endregion
+
+        #region Status Panel Refresh
 
         private void RefreshStatusPanel()
         {
-            // Read settings
+            var darkMode = AppSettings.Current.GetTyped<bool>(SettingKey.DarkMode);
+
+            // Update fixed box colors
+            ApplyFixedBoxColors();
+
+            // Update dynamic destination box colors
+            ApplyDestinationBoxColors(darkMode);
+
+            // Redraw all lines and arrows
+            ClearDynamicLines();
+            DrawAllLines();
+            
+            Dispatcher.BeginInvoke(new Action(() => PositionArrows()), System.Windows.Threading.DispatcherPriority.Loaded);
+        }
+
+        private void ApplyFixedBoxColors()
+        {
+            var siftFolder = AppSettings.GetValue(SettingKey.SiftFolder);
             var lidarrUrl = AppSettings.GetValue(SettingKey.LidarrURL);
             var lidarrApiKey = AppSettings.GetValue(SettingKey.LidarrAPIKey);
             var backupRoot = AppSettings.GetValue(SettingKey.BackupRootFolder);
             var importPath = AppSettings.GetValue(SettingKey.LidarrImportPath);
             var importPathLocal = AppSettings.GetValue(SettingKey.LidarrImportPathLocal);
-            var notSelected = AppSettings.GetValue(SettingKey.NotSelectedPath);
-            var copyImported = AppSettings.Current.GetTyped<bool>(SettingKey.CopyImportedFiles);
             var copyImportedPath = AppSettings.GetValue(SettingKey.CopyImportedFilesPath);
-            var backupEnabled = AppSettings.Current.GetTyped<bool>(SettingKey.BackupFilesBeforeImport);
-
-            // Defer settings
-            var copyDeferred = AppSettings.Current.GetTyped<bool>(SettingKey.CopyDeferredFiles);
-            var backupDeferred = AppSettings.Current.GetTyped<bool>(SettingKey.BackupDeferredFiles);
-            var deferPath = AppSettings.GetValue(SettingKey.DeferDestinationPath);
-
-            // NotSelected-specific flags
-            var copyNotSelected = AppSettings.Current.GetTyped<bool>(SettingKey.CopyNotSelectedFiles);
-            var backupNotSelected = AppSettings.Current.GetTyped<bool>(SettingKey.BackupNotSelectedFiles);
-
-            // Declare libraryPath and libraryPathLocal variables
             var libraryPath = AppSettings.GetValue(SettingKey.LidarrLibraryPath);
             var libraryPathLocal = AppSettings.GetValue(SettingKey.LidarrLibraryPathLocal);
+            var backupEnabled = AppSettings.Current.GetTyped<bool>(SettingKey.BackupFilesBeforeImport);
+            var copyImported = AppSettings.Current.GetTyped<bool>(SettingKey.CopyImportedFiles);
 
-            // Determine brushes for each box
-            var brushLidarr = (!string.IsNullOrWhiteSpace(lidarrUrl) && !string.IsNullOrWhiteSpace(lidarrApiKey)) ? BrushGreen : BrushRed;
+            SetBoxColor("Box_SiftTracks", GetPathBrush(siftFolder));
+            SetBoxColor("Box_LidarrURL", (!string.IsNullOrWhiteSpace(lidarrUrl) && !string.IsNullOrWhiteSpace(lidarrApiKey)) ? BrushGreen : BrushRed);
+            SetBoxColor("Box_LidarrReleases", GetMappedPathBrush(importPath, importPathLocal));
+            SetBoxColor("Box_LidarrImport", GetMappedPathBrush(libraryPath, libraryPathLocal));
+            SetBoxColor("Box_BackupRootFolder", GetEnabledPathBrush(backupEnabled, backupRoot));
+            SetBoxColor("Box_CopyImportedFiles", GetEnabledPathBrush(copyImported, copyImportedPath, BrushGray));
+        }
 
-            Brush brushBackup;
-            if (!backupEnabled)
-            {
-                brushBackup = BrushLightGray;
-            }
-            else if (string.IsNullOrWhiteSpace(backupRoot))
-            {
-                brushBackup = BrushRed;
-            }
-            else if (Directory.Exists(backupRoot))
-            {
-                brushBackup = BrushGreen;
-            }
-            else
-            {
-                brushBackup = BrushAmber;
-            }
+        private void SetBoxColor(string boxName, Brush brush)
+        {
+            if (this.FindName(boxName) is Border box)
+                box.Background = brush;
+        }
 
-            // Determine brush for Releases (based on import path settings only)
-            Brush brushReleases;
-            if (string.IsNullOrWhiteSpace(importPath) || string.IsNullOrWhiteSpace(importPathLocal))
-            {
-                brushReleases = BrushRed;
-            }
-            else
-            {
-                var importLocalOk = Directory.Exists(importPathLocal);
-                brushReleases = importLocalOk ? BrushGreen : BrushAmber;
-            }
+        private Brush GetPathBrush(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return BrushRed;
+            return Directory.Exists(path) ? BrushGreen : BrushAmber;
+        }
 
-            // Determine brush for Library (based on library path settings)
-            Brush brushLibrary;
-            if (string.IsNullOrWhiteSpace(libraryPath) || string.IsNullOrWhiteSpace(libraryPathLocal))
-            {
-                brushLibrary = BrushRed;
-            }
-            else
-            {
-                var libraryLocalOk = Directory.Exists(libraryPathLocal);
-                brushLibrary = libraryLocalOk ? BrushGreen : BrushAmber;
-            }
+        private Brush GetMappedPathBrush(string? serverPath, string? localPath)
+        {
+            if (string.IsNullOrWhiteSpace(serverPath) || string.IsNullOrWhiteSpace(localPath)) return BrushRed;
+            return Directory.Exists(localPath) ? BrushGreen : BrushAmber;
+        }
 
-            Brush brushImport;
-            // Require that the server import path is set; but only mark green when a local mapping exists and is valid
-            if (string.IsNullOrWhiteSpace(importPath))
+        private Brush GetEnabledPathBrush(bool enabled, string? path, Brush? disabledBrush = null)
+        {
+            if (!enabled) return disabledBrush ?? BrushLightGray;
+            if (string.IsNullOrWhiteSpace(path)) return BrushRed;
+            return Directory.Exists(path) ? BrushGreen : BrushAmber;
+        }
+
+        private void ApplyDestinationBoxColors(bool darkMode)
+        {
+            var destBoxes = FindDestinationBoxes();
+            foreach (var (destName, border) in destBoxes)
             {
-                brushImport = BrushRed;
-            }
-            else
-            {
-                // If a local mapping is provided and exists -> green
-                if (!string.IsNullOrWhiteSpace(importPathLocal) && Directory.Exists(importPathLocal))
+                var dest = ImportDestinationsCollection.FirstOrDefault(d => d.Name == destName);
+                if (dest == null) continue;
+
+                if (string.IsNullOrWhiteSpace(dest.DestinationPath) || !Directory.Exists(dest.DestinationPath))
                 {
-                    brushImport = BrushGreen;
-                }
-                // If server path exists locally (maybe network-mounted) -> amber (accessible but mapping not configured)
-                else if (Directory.Exists(importPath))
-                {
-                    brushImport = BrushAmber;
+                    border.Background = BrushRed;
                 }
                 else
                 {
-                    brushImport = BrushRed;
+                    var colorKey = darkMode ? dest.ColorDark : dest.Color;
+                    border.Background = TryParseColorBrush(colorKey) ?? BrushGreen;
                 }
             }
+        }
 
-            Brush brushNotSelected;
-            if (string.IsNullOrWhiteSpace(notSelected)) brushNotSelected = BrushRed;
-            else if (Directory.Exists(notSelected)) brushNotSelected = BrushGreen;
-            else brushNotSelected = BrushAmber;
-
-            Brush brushCopy;
-            if (!copyImported)
+        private Brush? TryParseColorBrush(string colorKey)
+        {
+            try
             {
-                brushCopy = BrushGray;
+                var color = (Color)ColorConverter.ConvertFromString(colorKey);
+                return new SolidColorBrush(color);
             }
-            else if (string.IsNullOrWhiteSpace(copyImportedPath)) brushCopy = BrushRed;
-            else if (Directory.Exists(copyImportedPath)) brushCopy = BrushGreen;
-            else brushCopy = BrushAmber;
-
-            // Defer brushes
-            Brush brushDeferPath;
-            if (string.IsNullOrWhiteSpace(deferPath)) brushDeferPath = BrushRed;
-            else if (Directory.Exists(deferPath)) brushDeferPath = BrushGreen;
-            else brushDeferPath = BrushAmber;
-
-            Brush brushCopyDeferred;
-            if (!copyDeferred) brushCopyDeferred = BrushGray;
-            else brushCopyDeferred = brushDeferPath;
-
-            Brush brushBackupDeferred;
-            if (!backupDeferred) brushBackupDeferred = BrushLightGray;
-            else brushBackupDeferred = brushDeferPath;
-
-            // Apply brushes to boxes
-            Box_LidarrURL.Background = brushLidarr;
-            Box_BackupRootFolder.Background = brushBackup;
-            // Box_LidarrImport represents the library root now
-            Box_LidarrImport.Background = brushLibrary;
-            Box_NotSelected.Background = brushNotSelected;
-            Box_CopyImportedFiles.Background = brushCopy;
-            Box_Defer.Background = brushDeferPath;
-            var boxReleases = this.FindName("Box_LidarrReleases") as Border;
-            if (boxReleases != null)
+            catch
             {
-                boxReleases.Background = brushReleases;
+                return null;
             }
+        }
 
-            // Apply arrow colors - use FindName for new elements
-            var lineLidarrReleases = this.FindName("Line_LidarrURL_Releases") as Line;
-            var lineReleasesImport = this.FindName("Line_Releases_Import") as Line;
-            var lineReleasesNotSelected = this.FindName("Line_Releases_NotSelected") as Line;
-            var lineReleasesDefer = this.FindName("Line_Releases_Defer") as Line;
+        private void DrawAllLines()
+        {
+            // Get brushes for all connection points
+            var brushes = GetConnectionBrushes();
 
-            if (lineLidarrReleases != null) lineLidarrReleases.Stroke = MergeBrushes(brushLidarr, brushReleases);
-            if (lineReleasesImport != null) lineReleasesImport.Stroke = MergeBrushes(brushReleases, brushLibrary);
-            if (lineReleasesNotSelected != null) lineReleasesNotSelected.Stroke = MergeBrushes(brushReleases, brushNotSelected);
-            if (lineReleasesDefer != null) lineReleasesDefer.Stroke = MergeBrushes(brushReleases, brushDeferPath);
+            // Draw static lines
+            DrawStaticLines(brushes);
 
-            // Line_LidarrURL_Backup: now connects Import -> Backup (legacy name)
-            var lineLidarrUrlBackup = this.FindName("Line_LidarrURL_Backup") as Line;
-            if (lineLidarrUrlBackup != null) lineLidarrUrlBackup.Stroke = MergeBrushes(brushLibrary, brushBackup);
+            // Draw dynamic destination lines
+            DrawDynamicDestinationLines(brushes);
+        }
 
-            var lineImportCopy = this.FindName("Line_Import_Copy") as Line;
-            if (lineImportCopy != null) lineImportCopy.Stroke = !copyImported ? BrushGray : MergeBrushes(brushLibrary, brushCopy);
-            var lineNotSelectedCopy = this.FindName("Line_NotSelected_Copy") as Line;
-            if (lineNotSelectedCopy != null) lineNotSelectedCopy.Stroke = !copyNotSelected ? BrushGray : MergeBrushes(brushNotSelected, brushCopy);
+        private System.Collections.Generic.Dictionary<string, Brush> GetConnectionBrushes()
+        {
+            var siftFolder = AppSettings.GetValue(SettingKey.SiftFolder);
+            var lidarrUrl = AppSettings.GetValue(SettingKey.LidarrURL);
+            var lidarrApiKey = AppSettings.GetValue(SettingKey.LidarrAPIKey);
+            var backupRoot = AppSettings.GetValue(SettingKey.BackupRootFolder);
+            var importPath = AppSettings.GetValue(SettingKey.LidarrImportPath);
+            var importPathLocal = AppSettings.GetValue(SettingKey.LidarrImportPathLocal);
+            var copyImportedPath = AppSettings.GetValue(SettingKey.CopyImportedFilesPath);
+            var libraryPath = AppSettings.GetValue(SettingKey.LidarrLibraryPath);
+            var libraryPathLocal = AppSettings.GetValue(SettingKey.LidarrLibraryPathLocal);
+            var backupEnabled = AppSettings.Current.GetTyped<bool>(SettingKey.BackupFilesBeforeImport);
+            var copyEnabled = AppSettings.Current.GetTyped<bool>(SettingKey.CopyImportedFiles);
 
-            // NotSelected -> Backup
-            var lineNotSelectedBackup = this.FindName("Line_NotSelected_Backup") as Line;
-            if (lineNotSelectedBackup != null)
+            return new System.Collections.Generic.Dictionary<string, Brush>
             {
-                lineNotSelectedBackup.Stroke = !backupNotSelected ? BrushLightGray : MergeBrushes(brushNotSelected, brushBackup);
-            }
+                ["SiftTracks"] = GetPathBrush(siftFolder),
+                ["Lidarr"] = (!string.IsNullOrWhiteSpace(lidarrUrl) && !string.IsNullOrWhiteSpace(lidarrApiKey)) ? BrushGreen : BrushRed,
+                ["Releases"] = GetMappedPathBrush(importPath, importPathLocal),
+                ["Library"] = GetMappedPathBrush(libraryPath, libraryPathLocal),
+                ["Backup"] = GetEnabledPathBrush(backupEnabled, backupRoot),
+                ["Copy"] = GetEnabledPathBrush(copyEnabled, copyImportedPath, BrushGray)
+            };
+        }
 
-            // Defer-related lines
-            var lineDeferBackup = this.FindName("Line_Defer_Backup") as Line;
-            if (lineDeferBackup != null) lineDeferBackup.Stroke = !backupDeferred ? BrushLightGray : MergeBrushes(brushDeferPath, brushBackupDeferred);
-            var lineDeferCopy = this.FindName("Line_Defer_Copy") as Line;
-            if (lineDeferCopy != null) lineDeferCopy.Stroke = !copyDeferred ? BrushGray : MergeBrushes(brushDeferPath, brushCopyDeferred);
+        #endregion
 
-            // Also set arrowhead fills (use FindName)
-            var headLidarrReleases = this.FindName("Head_LidarrURL_Releases") as Polygon;
-            if (headLidarrReleases != null && lineLidarrReleases != null) headLidarrReleases.Fill = lineLidarrReleases.Stroke;
-            var headReleasesImport = this.FindName("Head_Releases_Import") as Polygon;
-            if (headReleasesImport != null && lineReleasesImport != null) headReleasesImport.Fill = lineReleasesImport.Stroke;
-            var headReleasesNotSelected = this.FindName("Head_Releases_NotSelected") as Polygon;
-            if (headReleasesNotSelected != null && lineReleasesNotSelected != null) headReleasesNotSelected.Fill = lineReleasesNotSelected.Stroke;
-            var headReleasesDefer = this.FindName("Head_Releases_Defer") as Polygon;
-            if (headReleasesDefer != null && lineReleasesDefer != null) headReleasesDefer.Fill = lineReleasesDefer.Stroke;
+        #region Line Drawing
 
-            var headLidarrUrlBackup = this.FindName("Head_LidarrURL_Backup") as Polygon;
-            if (headLidarrUrlBackup != null && lineLidarrUrlBackup != null) headLidarrUrlBackup.Fill = lineLidarrUrlBackup.Stroke;
-            var headImportCopy = this.FindName("Head_Import_Copy") as Polygon;
-            if (headImportCopy != null && lineImportCopy != null) headImportCopy.Fill = lineImportCopy.Stroke;
-            var headNotSelectedCopy = this.FindName("Head_NotSelected_Copy") as Polygon;
-            if (headNotSelectedCopy != null && lineNotSelectedCopy != null) headNotSelectedCopy.Fill = lineNotSelectedCopy.Stroke;
+        private void ClearDynamicLines()
+        {
+            foreach (var line in _dynamicLines)
+                ArrowsCanvas.Children.Remove(line);
+            foreach (var head in _dynamicHeads)
+                ArrowsCanvas.Children.Remove(head);
+            
+            _dynamicLines.Clear();
+            _dynamicHeads.Clear();
+        }
 
-            var headNotSelectedBackup = this.FindName("Head_NotSelected_Backup") as Polygon;
-            if (headNotSelectedBackup != null && lineNotSelectedBackup != null)
+        private void DrawStaticLines(System.Collections.Generic.Dictionary<string, Brush> brushes)
+        {
+            DrawAndFillLine("Line_SiftTracks_LidarrURL", "Head_SiftTracks_LidarrURL", 
+                MergeBrushes(brushes["SiftTracks"], brushes["Lidarr"]));
+            DrawAndFillLine("Line_LidarrURL_Releases", "Head_LidarrURL_Releases", 
+                MergeBrushes(brushes["Lidarr"], brushes["Releases"]));
+            DrawAndFillLine("Line_Releases_Import", "Head_Releases_Import", 
+                MergeBrushes(brushes["Releases"], brushes["Library"]));
+            DrawAndFillLine("Line_LidarrURL_Backup", "Head_LidarrURL_Backup", 
+                MergeBrushes(brushes["Library"], brushes["Backup"]));
+            DrawAndFillLine("Line_Import_Copy", "Head_Import_Copy", 
+                MergeBrushes(brushes["Library"], brushes["Copy"]));
+        }
+
+        private void DrawAndFillLine(string lineName, string headName, Brush brush)
+        {
+            if (this.FindName(lineName) is Line line)
             {
-                headNotSelectedBackup.Fill = lineNotSelectedBackup.Stroke;
+                line.Stroke = brush;
+                if (this.FindName(headName) is Polygon head)
+                    head.Fill = line.Stroke;
             }
+        }
 
-            var headDeferBackup = this.FindName("Head_Defer_Backup") as Polygon;
-            if (headDeferBackup != null && lineDeferBackup != null) headDeferBackup.Fill = lineDeferBackup.Stroke;
-            var headDeferCopy = this.FindName("Head_Defer_Copy") as Polygon;
-            if (headDeferCopy != null && lineDeferCopy != null) headDeferCopy.Fill = lineDeferCopy.Stroke;
+        private void DrawDynamicDestinationLines(System.Collections.Generic.Dictionary<string, Brush> brushes)
+        {
+            foreach (var dest in ImportDestinationsCollection)
+            {
+                var destBrush = string.IsNullOrWhiteSpace(dest.DestinationPath) ? BrushRed :
+                               Directory.Exists(dest.DestinationPath) ? BrushGreen : BrushAmber;
 
-            // Ensure lines are positioned (in case layout already ready)
-            PositionArrows();
+                // Releases -> Destination
+                CreateDynamicLine($"Line_Releases_{dest.Name}", $"Head_Releases_{dest.Name}", 
+                    MergeBrushes(brushes["Releases"], destBrush));
+
+                // Destination -> Backup (if enabled)
+                if (dest.BackupFiles)
+                    CreateDynamicLine($"Line_{dest.Name}_Backup", $"Head_{dest.Name}_Backup", 
+                        MergeBrushes(destBrush, brushes["Backup"]));
+
+                // Destination -> Copy (if enabled)
+                if (dest.CopyFiles)
+                    CreateDynamicLine($"Line_{dest.Name}_Copy", $"Head_{dest.Name}_Copy", 
+                        MergeBrushes(destBrush, brushes["Copy"]));
+            }
+        }
+
+        private void CreateDynamicLine(string lineTag, string headTag, Brush stroke)
+        {
+            var line = new Line
+            {
+                StrokeThickness = 3,
+                Stroke = stroke,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+                Tag = lineTag
+            };
+            line.MouseEnter += DynamicArrow_MouseEnter;
+            line.MouseLeave += DynamicArrow_MouseLeave;
+
+            var head = new Polygon
+            {
+                Fill = stroke,
+                Tag = headTag
+            };
+
+            ArrowsCanvas.Children.Add(line);
+            ArrowsCanvas.Children.Add(head);
+            _dynamicLines.Add(line);
+            _dynamicHeads.Add(head);
         }
 
         private Brush MergeBrushes(Brush a, Brush b)
         {
-            // If either is red -> red, else if either amber -> amber, else if either gray/lightgray -> gray, else green
             if (a == BrushRed || b == BrushRed) return BrushRed;
             if (a == BrushAmber || b == BrushAmber) return BrushAmber;
             if (a == BrushGray || b == BrushGray || a == BrushLightGray || b == BrushLightGray) return BrushGray;
             return BrushGreen;
         }
 
+        #endregion
+
+        #region Arrow Positioning
+
         private void PositionArrows()
         {
-            // prevent re-entrancy
-            if (_isPositioning) return;
+            if (_isPositioning || ArrowsCanvas == null) return;
             _isPositioning = true;
 
             try
             {
-                if (ArrowsCanvas == null) return;
-
-                // Helper to get center of a UIElement relative to the canvas
-                Point Center(UIElement el)
-                {
-                    try
-                    {
-                        var transform = el.TransformToVisual(ArrowsCanvas);
-                        var topLeft = transform.Transform(new Point(0, 0));
-                        if (el is FrameworkElement fe)
-                            return new Point(topLeft.X + fe.ActualWidth / 2, topLeft.Y + fe.ActualHeight / 2);
-                        return topLeft;
-                    }
-                    catch
-                    {
-                        return new Point(0, 0);
-                    }
-                }
-
-                // Resolve box elements (use FindName for boxes that may have been renamed)
-                var boxLidarr = this.FindName("Box_LidarrURL") as UIElement ?? Box_LidarrURL as UIElement;
-                var boxReleases = this.FindName("Box_LidarrReleases") as UIElement;
-                var boxImport = this.FindName("Box_LidarrImport") as UIElement ?? Box_LidarrImport as UIElement;
-                var boxNotSel = this.FindName("Box_NotSelected") as UIElement ?? Box_NotSelected as UIElement;
-                var boxDefer = this.FindName("Box_Defer") as UIElement ?? Box_Defer as UIElement;
-                var boxBackup = this.FindName("Box_BackupRootFolder") as UIElement ?? Box_BackupRootFolder as UIElement;
-                var boxCopy = this.FindName("Box_CopyImportedFiles") as UIElement ?? Box_CopyImportedFiles as UIElement;
-
-                // Compute centers and rects (fall back to BoxesGrid when element missing)
-                var defaultEl = BoxesGrid as UIElement;
-
-                var elCenter = new System.Collections.Generic.Dictionary<string, Point>(StringComparer.OrdinalIgnoreCase);
-                var elRect = new System.Collections.Generic.Dictionary<string, Rect>(StringComparer.OrdinalIgnoreCase);
-
-                void AddElement(string key, UIElement? el)
-                {
-                    var actual = el ?? defaultEl;
-                    elCenter[key] = Center(actual);
-                    elRect[key] = GetElementRect(actual);
-                }
-
-                AddElement("Lidarr", boxLidarr);
-                AddElement("Releases", boxReleases ?? defaultEl);
-                AddElement("Import", boxImport);
-                AddElement("NotSelected", boxNotSel);
-                AddElement("Defer", boxDefer);
-                AddElement("Backup", boxBackup);
-                AddElement("Copy", boxCopy);
-
-                // Helper to draw a named logical connection using elements map and UI elements
-                void DrawConnection(string srcKey, string dstKey, string lineName, string headName)
-                {
-                    var line = this.FindName(lineName) as Line;
-                    var head = this.FindName(headName) as Polygon;
-                    if (line == null) return; // nothing to draw
-
-                    var a = elCenter.ContainsKey(srcKey) ? elCenter[srcKey] : new Point(0, 0);
-                    var b = elCenter.ContainsKey(dstKey) ? elCenter[dstKey] : new Point(0, 0);
-                    var rSrc = elRect.ContainsKey(srcKey) ? elRect[srcKey] : Rect.Empty;
-                    var rDst = elRect.ContainsKey(dstKey) ? elRect[dstKey] : Rect.Empty;
-
-                    var start = GetRectIntersectionPoint(rSrc, a, b, preferNearA: true) ?? a;
-                    var end = GetRectIntersectionPoint(rDst, a, b, preferNearA: false) ?? b;
-
-                    SetLine(line, head, start, end);
-                }
-
-                // Now draw all logical connections in a consistent order
-                // Lidarr URL -> Releases
-                DrawConnection("Lidarr", "Releases", "Line_LidarrURL_Releases", "Head_LidarrURL_Releases");
-
-                // Releases -> Import
-                DrawConnection("Releases", "Import", "Line_Releases_Import", "Head_Releases_Import");
-
-                // Releases -> NotSelected
-                DrawConnection("Releases", "NotSelected", "Line_Releases_NotSelected", "Head_Releases_NotSelected");
-
-                // Releases -> Defer
-                DrawConnection("Releases", "Defer", "Line_Releases_Defer", "Head_Releases_Defer");
-
-                // Import -> Backup (legacy line name kept)
-                DrawConnection("Import", "Backup", "Line_LidarrURL_Backup", "Head_LidarrURL_Backup");
-
-                // Import -> Copy
-                DrawConnection("Import", "Copy", "Line_Import_Copy", "Head_Import_Copy");
-
-                // NotSelected -> Copy
-                DrawConnection("NotSelected", "Copy", "Line_NotSelected_Copy", "Head_NotSelected_Copy");
-
-                // NotSelected -> Backup
-                DrawConnection("NotSelected", "Backup", "Line_NotSelected_Backup", "Head_NotSelected_Backup");
-
-                // Defer -> Backup
-                DrawConnection("Defer", "Backup", "Line_Defer_Backup", "Head_Defer_Backup");
-
-                // Defer -> Copy
-                DrawConnection("Defer", "Copy", "Line_Defer_Copy", "Head_Defer_Copy");
+                var elements = BuildElementDictionary();
+                DrawStaticConnections(elements);
+                DrawDynamicConnections(elements);
             }
             finally
             {
                 _isPositioning = false;
+            }
+        }
+
+        private System.Collections.Generic.Dictionary<string, (Point center, Rect rect)> BuildElementDictionary()
+        {
+            var result = new System.Collections.Generic.Dictionary<string, (Point, Rect)>(StringComparer.OrdinalIgnoreCase);
+            
+            void AddBox(string key, string boxName)
+            {
+                var box = this.FindName(boxName) as UIElement ?? BoxesGrid as UIElement;
+                result[key] = (GetCenter(box), GetElementRect(box));
+            }
+
+            AddBox("SiftTracks", "Box_SiftTracks");
+            AddBox("Lidarr", "Box_LidarrURL");
+            AddBox("Releases", "Box_LidarrReleases");
+            AddBox("Import", "Box_LidarrImport");
+            AddBox("Backup", "Box_BackupRootFolder");
+            AddBox("Copy", "Box_CopyImportedFiles");
+
+            foreach (var (name, border) in FindDestinationBoxes())
+                result[$"Dest_{name}"] = (GetCenter(border), GetElementRect(border));
+
+            return result;
+        }
+
+        private void DrawStaticConnections(System.Collections.Generic.Dictionary<string, (Point center, Rect rect)> elements)
+        {
+            ConnectElements(elements, "SiftTracks", "Lidarr", "Line_SiftTracks_LidarrURL", "Head_SiftTracks_LidarrURL");
+            ConnectElements(elements, "Lidarr", "Releases", "Line_LidarrURL_Releases", "Head_LidarrURL_Releases");
+            ConnectElements(elements, "Releases", "Import", "Line_Releases_Import", "Head_Releases_Import");
+            ConnectElements(elements, "Import", "Backup", "Line_LidarrURL_Backup", "Head_LidarrURL_Backup");
+            ConnectElements(elements, "Import", "Copy", "Line_Import_Copy", "Head_Import_Copy");
+        }
+
+        private void DrawDynamicConnections(System.Collections.Generic.Dictionary<string, (Point center, Rect rect)> elements)
+        {
+            foreach (var dest in ImportDestinationsCollection)
+            {
+                var destKey = $"Dest_{dest.Name}";
+                
+                var (lineRelDest, headRelDest) = FindDynamicLineAndHead($"Line_Releases_{dest.Name}", $"Head_Releases_{dest.Name}");
+                if (lineRelDest != null)
+                    ConnectElements(elements, "Releases", destKey, lineRelDest, headRelDest);
+
+                if (dest.BackupFiles)
+                {
+                    var (lineDestBackup, headDestBackup) = FindDynamicLineAndHead($"Line_{dest.Name}_Backup", $"Head_{dest.Name}_Backup");
+                    if (lineDestBackup != null)
+                        ConnectElements(elements, destKey, "Backup", lineDestBackup, headDestBackup);
+                }
+
+                if (dest.CopyFiles)
+                {
+                    var (lineDestCopy, headDestCopy) = FindDynamicLineAndHead($"Line_{dest.Name}_Copy", $"Head_{dest.Name}_Copy");
+                    if (lineDestCopy != null)
+                        ConnectElements(elements, destKey, "Copy", lineDestCopy, headDestCopy);
+                }
+            }
+        }
+
+        private (Line?, Polygon?) FindDynamicLineAndHead(string lineTag, string headTag)
+        {
+            var line = _dynamicLines.FirstOrDefault(l => l.Tag as string == lineTag);
+            var head = _dynamicHeads.FirstOrDefault(h => h.Tag as string == headTag);
+            return (line, head);
+        }
+
+        private void ConnectElements(System.Collections.Generic.Dictionary<string, (Point center, Rect rect)> elements, 
+            string srcKey, string dstKey, string lineName, string headName)
+        {
+            var line = this.FindName(lineName) as Line;
+            var head = this.FindName(headName) as Polygon;
+            ConnectElements(elements, srcKey, dstKey, line, head);
+        }
+
+        private void ConnectElements(System.Collections.Generic.Dictionary<string, (Point center, Rect rect)> elements, 
+            string srcKey, string dstKey, Line? line, Polygon? head)
+        {
+            if (line == null) return;
+
+            var (centerA, rectA) = elements.ContainsKey(srcKey) ? elements[srcKey] : (new Point(0, 0), Rect.Empty);
+            var (centerB, rectB) = elements.ContainsKey(dstKey) ? elements[dstKey] : (new Point(0, 0), Rect.Empty);
+
+            var start = GetRectIntersectionPoint(rectA, centerA, centerB, preferNearA: true) ?? centerA;
+            var end = GetRectIntersectionPoint(rectB, centerA, centerB, preferNearA: false) ?? centerB;
+
+            SetLine(line, head, start, end);
+        }
+
+        private Point GetCenter(UIElement el)
+        {
+            try
+            {
+                var transform = el.TransformToVisual(ArrowsCanvas);
+                var topLeft = transform.Transform(new Point(0, 0));
+                if (el is FrameworkElement fe)
+                    return new Point(topLeft.X + fe.ActualWidth / 2, topLeft.Y + fe.ActualHeight / 2);
+                return topLeft;
+            }
+            catch
+            {
+                return new Point(0, 0);
             }
         }
 
@@ -542,7 +718,7 @@ namespace LidarrCompanion
                 if (el is FrameworkElement fe && ArrowsCanvas != null)
                 {
                     var transform = fe.TransformToVisual(ArrowsCanvas);
-                    var topLeft = transform.Transform(new Point(0,0));
+                    var topLeft = transform.Transform(new Point(0, 0));
                     return new Rect(topLeft, new Size(fe.ActualWidth, fe.ActualHeight));
                 }
             }
@@ -553,122 +729,117 @@ namespace LidarrCompanion
         private Point? GetRectIntersectionPoint(Rect rect, Point a, Point b, bool preferNearA)
         {
             if (rect.IsEmpty) return null;
+            
             var dx1 = b.X - a.X;
             var dy1 = b.Y - a.Y;
             var candidates = new System.Collections.Generic.List<(Point pt, double t)>();
 
-            Point[] corners = new Point[] {
-                new Point(rect.Left, rect.Top),
-                new Point(rect.Right, rect.Top),
-                new Point(rect.Right, rect.Bottom),
-                new Point(rect.Left, rect.Bottom)
-            };
+            Point[] corners = { new(rect.Left, rect.Top), new(rect.Right, rect.Top), 
+                              new(rect.Right, rect.Bottom), new(rect.Left, rect.Bottom) };
 
-            for (int i =0; i <4; i++)
+            for (int i = 0; i < 4; i++)
             {
                 var p1 = corners[i];
-                var p2 = corners[(i +1) %4];
+                var p2 = corners[(i + 1) % 4];
                 var dx2 = p2.X - p1.X;
                 var dy2 = p2.Y - p1.Y;
 
                 var denom = dx1 * dy2 - dy1 * dx2;
-                if (Math.Abs(denom) <1e-9) continue;
+                if (Math.Abs(denom) < 1e-9) continue;
 
                 var t = ((p1.X - a.X) * dy2 - (p1.Y - a.Y) * dx2) / denom;
                 var u = ((p1.X - a.X) * dy1 - (p1.Y - a.Y) * dx1) / denom;
 
-                // intersection must lie on the rectangle edge segment (u between0 and1)
-                if (u >=0.0 -1e-9 && u <=1.0 +1e-9 && t >=0.0 -1e-9 && t <=1.0 +1e-9)
+                if (u >= -1e-9 && u <= 1.0 + 1e-9 && t >= -1e-9 && t <= 1.0 + 1e-9)
                 {
-                    var ix = a.X + t * dx1;
-                    var iy = a.Y + t * dy1;
-                    candidates.Add((new Point(ix, iy), t));
+                    candidates.Add((new Point(a.X + t * dx1, a.Y + t * dy1), t));
                 }
             }
 
-            if (candidates.Count ==0) return null;
+            if (candidates.Count == 0) return null;
 
-            // choose intersection nearest to A or nearest to B depending on preferNearA
-            if (preferNearA)
-            {
-                // smallest positive t
-                double bestT = double.MaxValue;
-                Point best = candidates[0].pt;
-                foreach (var c in candidates)
-                {
-                    if (c.t >=0 && c.t < bestT)
-                    {
-                        bestT = c.t; best = c.pt;
-                    }
-                }
-                // move a small amount outward so the line doesn't overlap the border
-                return OffsetAlongLine(best, a, b,4.0);
-            }
-            else
-            {
-                // largest t <=1 (closest to B)
-                double bestT = double.MinValue;
-                Point best = candidates[0].pt;
-                foreach (var c in candidates)
-                {
-                    if (c.t <=1 && c.t > bestT)
-                    {
-                        bestT = c.t; best = c.pt;
-                    }
-                }
-                return OffsetAlongLine(best, a, b, -4.0);
-            }
+            var best = preferNearA 
+                ? candidates.Where(c => c.t >= 0).MinBy(c => c.t)
+                : candidates.Where(c => c.t <= 1).MaxBy(c => c.t);
+
+            return best.pt != default ? OffsetAlongLine(best.pt, a, b, preferNearA ? 4.0 : -4.0) : null;
         }
 
         private Point OffsetAlongLine(Point pt, Point a, Point b, double offset)
         {
-            // offset positive moves from pt towards b; negative moves towards a
             var vx = b.X - a.X;
             var vy = b.Y - a.Y;
             var len = Math.Sqrt(vx * vx + vy * vy);
-            if (len <1e-6) return pt;
-            var ux = vx / len;
-            var uy = vy / len;
-            return new Point(pt.X + ux * offset, pt.Y + uy * offset);
+            if (len < 1e-6) return pt;
+            return new Point(pt.X + (vx / len) * offset, pt.Y + (vy / len) * offset);
         }
 
-        private void SetLine(Line line, Polygon head, Point a, Point b)
+        private void SetLine(Line line, Polygon? head, Point a, Point b)
         {
-            if (line == null) return;
             line.X1 = a.X;
             line.Y1 = a.Y;
             line.X2 = b.X;
             line.Y2 = b.Y;
 
-            // compute arrowhead polygon (equilateral triangle) at b, oriented from a->b
             if (head == null) return;
+            
             double angle = Math.Atan2(b.Y - a.Y, b.X - a.X);
-            const double size =10.0;
-            // base points relative to tip
-            var p1 = new Point(b.X, b.Y);
-            var p2 = new Point(b.X - size * Math.Cos(angle - Math.PI /6), b.Y - size * Math.Sin(angle - Math.PI /6));
-            var p3 = new Point(b.X - size * Math.Cos(angle + Math.PI /6), b.Y - size * Math.Sin(angle + Math.PI /6));
-
-            head.Points = new PointCollection() { p1, p2, p3 };
+            const double size = 10.0;
+            head.Points = new PointCollection 
+            {
+                new Point(b.X, b.Y),
+                new Point(b.X - size * Math.Cos(angle - Math.PI / 6), b.Y - size * Math.Sin(angle - Math.PI / 6)),
+                new Point(b.X - size * Math.Cos(angle + Math.PI / 6), b.Y - size * Math.Sin(angle + Math.PI / 6))
+            };
         }
 
-        // Removed earlier duplicate mappings and handlers. Consolidated mappings and handlers are defined later in the file.
+        #endregion
 
-        private void HighlightSettings(SettingKey[]? keys, bool highlight)
+        #region Helper Methods
+
+        private System.Collections.Generic.Dictionary<string, Border> FindDestinationBoxes()
         {
-            // Reset all first
-            foreach (var si in SettingsCollection)
+            var result = new System.Collections.Generic.Dictionary<string, Border>();
+            
+            if (DynamicDestinationBoxes == null) return result;
+
+            var presenter = FindVisualChild<ItemsPresenter>(DynamicDestinationBoxes);
+            if (presenter == null) return result;
+
+            var panel = FindVisualChild<Panel>(presenter);
+            if (panel == null) return result;
+
+            foreach (UIElement child in panel.Children)
             {
-                si.IsHighlighted = false;
+                if (child is ContentPresenter cp)
+                {
+                    var border = FindVisualChild<Border>(cp);
+                    if (border?.Tag is ImportDestination dest)
+                        result[dest.Name] = border;
+                }
             }
 
-            if (keys == null || !highlight) return;
-
-            var keyNames = keys.Select(k => k.ToString()).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            foreach (var si in SettingsCollection)
-            {
-                if (keyNames.Contains(si.Name)) si.IsHighlighted = true;
-            }
+            return result;
         }
+
+        private T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+        {
+            if (parent == null) return null;
+
+            for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+            {
+                var child = VisualTreeHelper.GetChild(parent, i);
+                if (child is T typedChild)
+                    return typedChild;
+
+                var result = FindVisualChild<T>(child);
+                if (result != null)
+                    return result;
+            }
+
+            return null;
+        }
+
+        #endregion
     }
 }

@@ -26,10 +26,12 @@ namespace LidarrCompanion
 
             if (_proposedActions == null || !_proposedActions.Any())
             {
+                Logger.Log("No proposed actions to import", LogSeverity.Low);
                 MessageBox.Show("No proposed actions to import.", "Nothing to import", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
 
+            Logger.Log($"Starting import of {_proposedActions.Count} proposed actions", LogSeverity.Medium);
             SetBusy("Importing files to Lidarr...");
              try
              {
@@ -58,8 +60,13 @@ namespace LidarrCompanion
                         // leave failed actions in the list and show error in MatchedRelease column
                         pa.MatchedRelease = pa.ErrorMessage;
                         failedCount++;
+                        Logger.Log($"Import failed for file: {pa.OriginalFileName}", LogSeverity.High, new { FileId = pa.FileId, Error = pa.ErrorMessage });
                     }
                 }
+
+                Logger.Log($"Import completed - Success: {removedCount}, Failed: {failedCount}", 
+                    failedCount > 0 ? LogSeverity.Medium : LogSeverity.Low,
+                    new { Success = removedCount, Failed = failedCount });
 
                 // Show summary
                 if ((removedCount + failedCount) == 0)
@@ -81,6 +88,7 @@ namespace LidarrCompanion
             }
             catch (Exception ex)
             {
+                Logger.Log($"Import exception: {ex.Message}", LogSeverity.Critical, ex);
                 MessageBox.Show($"Import failed: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
             finally

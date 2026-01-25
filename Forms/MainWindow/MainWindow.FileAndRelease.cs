@@ -16,8 +16,8 @@ namespace LidarrCompanion
     public partial class MainWindow
     {
        
-        // Generic creator for frontend proposals (NotForImport, Defer, Unlink, Delete)
-        private void CreateProposal(LidarrCompanion.Helpers.ProposalActionType kind)
+        // Generic creator for frontend proposals (NotForImport, Defer, Unlink, Delete, or dynamic destination)
+        private void CreateProposal(LidarrCompanion.Helpers.ProposalActionType kind, string? destinationName = null)
         {
             try
             {
@@ -30,19 +30,91 @@ namespace LidarrCompanion
                     MessageBox.Show("Select one or more files from 'Unimported Release Files' first.", "No file selected", MessageBoxButton.OK, MessageBoxImage.Information);
                     return;
                 }
-                else
-                {
 
-                    foreach (var selFile in selectedFiles)
+                foreach (var selFile in selectedFiles)
+                {
+                    // Remove any existing proposals for this file
+                    var existingForFile = _proposedActions.Where(p => p.FileId == selFile.Id).ToList();
+                    foreach (var ex in existingForFile)
                     {
-                        // Delegate creation to the service. Pass null for selectedPa and the selected file.
-                        _proposalService.CreateProposedAction(kind, selFile, currentQueueRecord, _proposedActions, _manualImportFiles, this._queueRecords);
+                        var fileForEx = _manualImportFiles.FirstOrDefault(f => f.Id == ex.FileId);
+                        if (fileForEx != null) fileForEx.ProposedActionType = null;
+                        _proposedActions.Remove(ex);
                     }
+
+                    var originalRelease = currentQueueRecord is LidarrQueueRecord qr ? qr.Title : Path.GetFileName(selFile.Path) ?? string.Empty;
+
+                    var pa = new ProposedAction
+                    {
+                        OriginalFileName = selFile.Name,
+                        OriginalRelease = originalRelease,
+                        FileId = selFile.Id,
+                        Path = selFile.Path,
+                        DownloadId = currentQueueRecord?.DownloadId ?? string.Empty,
+                        Action = kind,
+                        DestinationName = destinationName ?? string.Empty
+                    };
+
+                    _proposedActions.Add(pa);
+                    selFile.ProposedActionType = kind;
                 }
             }
             catch (Exception ex)
             {
                 MessageBox.Show($"Operation failed: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // Populate the individual destination buttons (called when destinations change)
+        private void PopulateDestinationButtons()
+        {
+            var destinations = AppSettings.Current.ImportDestinations ?? new List<ImportDestination>();
+            ic_DestinationButtons.ItemsSource = destinations;
+            
+            Logger.Log($"Populated {destinations.Count} destination buttons", LogSeverity.Verbose, new { Count = destinations.Count });
+        }
+
+        // Handler for clicking an individual "Move To" destination button
+        private void btn_MoveToDestination_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (sender is Button button && button.Tag is ImportDestination dest)
+                {
+                    CreateProposal(ProposalActionType.MoveToDestination, dest.Name);
+                    
+                    // Auto-select next file after creating proposal
+                    if (list_Files_in_Release.SelectedItem is LidarrManualImportFile selectedFile)
+                    {
+                        SelectNextFileInRelease(selectedFile);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to create move proposal: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // Handler for clicking an individual "Open Folder" destination button
+        private void btn_OpenFolderDestination_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (sender is Button button && button.Tag is ImportDestination dest)
+                {
+                    if (string.IsNullOrWhiteSpace(dest.DestinationPath) || !Directory.Exists(dest.DestinationPath))
+                    {
+                        MessageBox.Show($"Destination folder '{dest.Name}' is not configured or does not exist.", "Folder Missing", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        return;
+                    }
+
+                    Process.Start(new ProcessStartInfo("explorer.exe", dest.DestinationPath) { UseShellExecute = true });
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to open folder: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
@@ -170,10 +242,122 @@ namespace LidarrCompanion
             _assignedFileIds.Add(selectedFile.Id);
             _assignedTrackIds.Add(selectedTrack.TrackId);
 
+            // Mark all other files from the same release for Unlink
+            MarkOtherFilesForUnlink(selectedFile, selectedQueueRecord);
+
             // Recompute scores because assignment state changed
             if (cmb_SortMode.SelectedItem is ComboBoxItem item)
             {
                 ApplyArtistReleasesSort(item.Content?.ToString() ?? string.Empty);
+            }
+
+            // Auto-select next file in the list
+            SelectNextFileInRelease(selectedFile);
+        }
+
+        private void MarkOtherFilesForUnlink(LidarrManualImportFile assignedFile, LidarrQueueRecord? queueRecord)
+        {
+            try
+            {
+                if (queueRecord == null)
+                {
+                    Logger.Log("Cannot mark other files for unlink - no queue record", LogSeverity.Verbose);
+                    return;
+                }
+
+                var originalRelease = queueRecord.Title ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(originalRelease))
+                {
+                    Logger.Log("Cannot mark other files for unlink - no release title", LogSeverity.Verbose);
+                    return;
+                }
+
+                Logger.Log($"Marking other files in release '{originalRelease}' for Unlink", LogSeverity.Low, new { Release = originalRelease, AssignedFileId = assignedFile.Id });
+
+                int markedCount = 0;
+                foreach (var file in _manualImportFiles)
+                {
+                    // Skip the file we just assigned
+                    if (file.Id == assignedFile.Id)
+                        continue;
+
+                    // Skip files that already have ANY proposed action (don't overwrite existing matches)
+                    if (file.ProposedActionType != null || _assignedFileIds.Contains(file.Id))
+                        continue;
+
+                    // Check if this file already has any proposal
+                    var existingProposal = _proposedActions.FirstOrDefault(p => p.FileId == file.Id);
+                    if (existingProposal != null)
+                        continue;
+
+                    // Check if this file is from the same release (same queue record)
+                    var fileFolder = Path.GetDirectoryName(file.Path);
+                    var assignedFolder = Path.GetDirectoryName(assignedFile.Path);
+                    
+                    if (string.Equals(fileFolder, assignedFolder, StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Create Unlink proposal for this file
+                        var existingUnlinkProposal = _proposedActions.FirstOrDefault(p => p.FileId == file.Id && p.Action == ProposalActionType.Unlink);
+                        
+                        if (existingUnlinkProposal == null)
+                        {
+                            var unlinkProposal = new ProposedAction
+                            {
+                                Action = ProposalActionType.Unlink,
+                                FileId = file.Id,
+                                Path = file.Path,
+                                OriginalFileName = Path.GetFileName(file.Path) ?? string.Empty,
+                                OriginalRelease = originalRelease,
+                                Quality = file.Quality
+                            };
+
+                            _proposedActions.Add(unlinkProposal);
+                            file.ProposedActionType = ProposalActionType.Unlink;
+                            markedCount++;
+                            
+                            Logger.Log($"Marked file for Unlink: {unlinkProposal.OriginalFileName}", LogSeverity.Verbose, new { FileId = file.Id, FileName = unlinkProposal.OriginalFileName }, filePath: file.Path);
+                        }
+                    }
+                }
+
+                Logger.Log($"Marked {markedCount} other file(s) for Unlink in release '{originalRelease}'", LogSeverity.Low, new { MarkedCount = markedCount, Release = originalRelease });
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"Failed to mark other files for unlink: {ex.Message}", LogSeverity.Medium, new { Error = ex.Message });
+            }
+        }
+
+        private void SelectNextFileInRelease(LidarrManualImportFile currentFile)
+        {
+            try
+            {
+                var currentIndex = list_Files_in_Release.Items.IndexOf(currentFile);
+                if (currentIndex >= 0 && currentIndex < list_Files_in_Release.Items.Count - 1)
+                {
+                    // Select the next file
+                    list_Files_in_Release.SelectedIndex = currentIndex + 1;
+                    list_Files_in_Release.ScrollIntoView(list_Files_in_Release.SelectedItem);
+                }
+                else if (list_Files_in_Release.Items.Count > 0)
+                {
+                    // If we were at the last item, stay there or go to first unassigned
+                    for (int i = 0; i < list_Files_in_Release.Items.Count; i++)
+                    {
+                        if (list_Files_in_Release.Items[i] is LidarrManualImportFile file && 
+                            file.ProposedActionType != ProposalActionType.Import &&
+                            !_assignedFileIds.Contains(file.Id))
+                        {
+                            list_Files_in_Release.SelectedIndex = i;
+                            list_Files_in_Release.ScrollIntoView(list_Files_in_Release.SelectedItem);
+                            return;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"Failed to auto-select next file: {ex.Message}", LogSeverity.Low, new { Error = ex.Message });
             }
         }
         
@@ -509,44 +693,6 @@ namespace LidarrCompanion
                     return;
                 }
             }            
-        }
-
-        private void btn_OpenDeferFolder_Click(object sender, RoutedEventArgs e)
-        {
-            try
-            {
-                var path = AppSettings.GetValue(SettingKey.DeferDestinationPath);
-                if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
-                {
-                    MessageBox.Show("Defer folder is not configured or does not exist.", "Folder Missing", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return;
-                }
-
-                Process.Start(new ProcessStartInfo("explorer.exe", path) { UseShellExecute = true });
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Failed to open folder: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-        }
-
-        private void btn_OpenNotSelectedFolder_Click(object sender, RoutedEventArgs e)
-        {
-            try
-            {
-                var path = AppSettings.GetValue(SettingKey.NotSelectedPath);
-                if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
-                {
-                    MessageBox.Show("Not selected folder is not configured or does not exist.", "Folder Missing", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return;
-                }
-
-                Process.Start(new ProcessStartInfo("explorer.exe", path) { UseShellExecute = true });
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Failed to open folder: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
         }
 
         private void list_Files_in_Release_SelectionChanged(object? sender, SelectionChangedEventArgs e)

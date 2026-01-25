@@ -5,7 +5,13 @@
              StartupUri="/Forms/MainWindow/MainWindow.xaml"
              xmlns:helpers="clr-namespace:LidarrCompanion.Helpers">
     <Application.Resources>
-        <helpers:ActionToBrushConverter x:Key="ActionToBackgroundConverter" Mode="Background"/>
-        <helpers:ActionToBrushConverter x:Key="ActionToForegroundConverter" Mode="Foreground"/>
+        <helpers:ActionToBackgroundConverter x:Key="ActionToBackgroundConverter"/>
+        <helpers:ActionToForegroundConverter x:Key="ActionToForegroundConverter"/>
+        <helpers:ThemedColorConverter x:Key="ThemedColorConverter"/>
+        
+        <!-- Themed ListView selection colors - these override system defaults globally -->
+        <!-- These will be updated by ThemeManager when dark mode toggles -->
+        <SolidColorBrush x:Key="ListViewItemSelectionBrush" Color="#FF505050"/>
+        <SolidColorBrush x:Key="ListViewItemHoverBrush" Color="#FF414141"/>
     </Application.Resources>
 </Application>

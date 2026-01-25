@@ -32,6 +32,9 @@ namespace LidarrCompanion.Helpers
         private ProposalActionType _action = ProposalActionType.Import;
         public ProposalActionType Action { get => _action; set { if (_action != value) { _action = value; OnPropertyChanged(nameof(Action)); } } }
 
+        // New: destination name for MoveToDestination actions
+        public string DestinationName { get; set; } = string.Empty;
+
         // New: import status and error message
         private string _importStatus = string.Empty;
         public string ImportStatus { get => _importStatus; set { if (_importStatus != value) { _importStatus = value; OnPropertyChanged(nameof(ImportStatus)); OnPropertyChanged(nameof(IsImportFailed)); } } }

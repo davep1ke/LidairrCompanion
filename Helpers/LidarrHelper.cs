@@ -10,12 +10,15 @@ namespace LidarrCompanion.Helpers
 
         public LidarrHelper()
         {
-
+            Logger.Log("LidarrHelper initialized", LogSeverity.Verbose);
+            
             _client = new HttpClient();
-            // Read timeout from settings (default30s)
+            // Read timeout from settings (default 30s)
             int timeoutSeconds = AppSettings.Current.GetTyped<int>(SettingKey.LidarrHttpTimeout);
             if (timeoutSeconds <= 0) timeoutSeconds = 30;
             _client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
+            
+            Logger.Log($"HTTP client configured with timeout: {timeoutSeconds}s", LogSeverity.Verbose, new { TimeoutSeconds = timeoutSeconds });
         }
 
         // Centralised request builder + sender. Returns the response JSON as string.
@@ -24,13 +27,21 @@ namespace LidarrCompanion.Helpers
             var baseUrl = AppSettings.GetValue(SettingKey.LidarrURL)?.TrimEnd('/');
             var apiKey = AppSettings.GetValue(SettingKey.LidarrAPIKey);
             if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(apiKey))
+            {
+                Logger.Log("Lidarr URL or API Key is not set", LogSeverity.Critical, new { BaseUrl = baseUrl, HasApiKey = !string.IsNullOrWhiteSpace(apiKey) });
                 throw new InvalidOperationException("Lidarr URL or API Key is not set.");
+            }
 
             var url = baseUrl + "/" + relativePath.TrimStart('/');
+            
+            // Build full URL for logging (without showing API key)
+            var logUrl = baseUrl + "/" + relativePath.TrimStart('/');
 
             // Ensure API key present as query parameter (caller-side removed apikey usage)
             var sep = url.Contains('?') ? '&' : '?';
             url = url + sep + "apikey=" + Uri.EscapeDataString(apiKey);
+
+            Logger.Log($"Calling Lidarr API: {method} {relativePath}", LogSeverity.Verbose, new { Method = method.Method, RelativePath = relativePath, HasPayload = payload != null }, filePath: logUrl);
 
             using var request = new HttpRequestMessage(method, url);
             // keep header as well for compatibility
@@ -40,17 +51,40 @@ namespace LidarrCompanion.Helpers
             {
                 var jsonPayload = JsonSerializer.Serialize(payload);
                 request.Content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
+                Logger.Log($"Request payload size: {jsonPayload.Length} bytes", LogSeverity.Verbose, new { PayloadSize = jsonPayload.Length });
             }
 
-            // Standardise to read full content before returning
-            using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseContentRead).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-            var respJson = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-            return respJson;
+            try
+            {
+                // Standardise to read full content before returning
+                using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseContentRead).ConfigureAwait(false);
+                response.EnsureSuccessStatusCode();
+                var respJson = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                
+                Logger.Log($"Lidarr API call successful: {method} {relativePath}", LogSeverity.Verbose, new { Method = method.Method, RelativePath = relativePath, ResponseLength = respJson.Length }, filePath: logUrl);
+                return respJson;
+            }
+            catch (HttpRequestException ex)
+            {
+                Logger.Log($"Lidarr API HTTP error: {ex.Message}", LogSeverity.High, new { Method = method.Method, RelativePath = relativePath, Error = ex.Message }, filePath: logUrl);
+                throw;
+            }
+            catch (TaskCanceledException ex)
+            {
+                Logger.Log($"Lidarr API timeout: {ex.Message}", LogSeverity.High, new { Method = method.Method, RelativePath = relativePath, Error = ex.Message }, filePath: logUrl);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"Lidarr API error: {ex.Message}", LogSeverity.High, new { Method = method.Method, RelativePath = relativePath, Error = ex.Message }, filePath: logUrl);
+                throw;
+            }
         }
 
         public async Task<IList<LidarrQueueRecord>> GetBlockedCompletedQueueAsync(int page = 1, int pageSize = 50)
         {
+            Logger.Log($"Getting blocked/completed queue (page {page}, size {pageSize})", LogSeverity.Low, new { Page = page, PageSize = pageSize });
+            
             var relative = $"api/v1/queue?page={page}&pageSize={pageSize}&includeUnknownArtistItems=true&includeArtist=true&includeAlbum=true";
             var json = await CallLidarrAsync(HttpMethod.Get, relative).ConfigureAwait(false);
 
@@ -77,11 +111,14 @@ namespace LidarrCompanion.Helpers
                 }
             }
 
+            Logger.Log($"Retrieved {results.Count} blocked/completed queue records", LogSeverity.Low, new { Count = results.Count });
             return results;
         }
 
         public async Task<IList<LidarrManualImportFile>> GetFilesInReleaseAsync(string folderPath)
         {
+            Logger.Log($"Getting files in release folder: {folderPath}", LogSeverity.Low, new { FolderPath = folderPath });
+            
             var relative = $"api/v1/manualimport?folder={Uri.EscapeDataString(folderPath)}";
             var json = await CallLidarrAsync(HttpMethod.Get, relative).ConfigureAwait(false);
 
@@ -123,11 +160,15 @@ namespace LidarrCompanion.Helpers
                     results.Add(file);
                 }
             }
+            
+            Logger.Log($"Retrieved {results.Count} files in release", LogSeverity.Low, new { FolderPath = folderPath, FileCount = results.Count });
             return results;
         }
 
         public async Task<IList<LidarrArtist>> GetAllArtistsAsync()
         {
+            Logger.Log("Getting all artists from Lidarr", LogSeverity.Low);
+            
             var json = await CallLidarrAsync(HttpMethod.Get, "api/v1/artist").ConfigureAwait(false);
 
             var results = new List<LidarrArtist>();
@@ -146,12 +187,15 @@ namespace LidarrCompanion.Helpers
                 }
             }
 
+            Logger.Log($"Retrieved {results.Count} artists", LogSeverity.Low, new { ArtistCount = results.Count });
             return results;
         }
 
         // Get albums for an artist (includeAllArtistAlbums=true)
         public async Task<IList<LidarrAlbum>> GetAlbumsByArtistAsync(int artistId)
         {
+            Logger.Log($"Getting albums for artist ID: {artistId}", LogSeverity.Low, new { ArtistId = artistId });
+            
             var relative = $"api/v1/album?artistId={artistId}&includeAllArtistAlbums=true";
             var json = await CallLidarrAsync(HttpMethod.Get, relative).ConfigureAwait(false);
 
@@ -224,12 +268,15 @@ namespace LidarrCompanion.Helpers
                 results.Sort((a, b) => string.Compare(a.Title, b.Title, StringComparison.OrdinalIgnoreCase));
             }
 
+            Logger.Log($"Retrieved {results.Count} albums for artist {artistId}", LogSeverity.Low, new { ArtistId = artistId, AlbumCount = results.Count });
             return results;
         }
 
         // Get tracks for a given albumReleaseId
         public async Task<IList<LidarrTrack>> GetTracksByReleaseAsync(int albumReleaseId)
         {
+            Logger.Log($"Getting tracks for album release ID: {albumReleaseId}", LogSeverity.Verbose, new { AlbumReleaseId = albumReleaseId });
+            
             var relative = $"api/v1/track?albumReleaseId={albumReleaseId}";
             var json = await CallLidarrAsync(HttpMethod.Get, relative).ConfigureAwait(false);
 
@@ -253,13 +300,21 @@ namespace LidarrCompanion.Helpers
                 }
             }
 
+            Logger.Log($"Retrieved {results.Count} tracks for release {albumReleaseId}", LogSeverity.Verbose, new { AlbumReleaseId = albumReleaseId, TrackCount = results.Count });
             return results;
         }
 
         // Get a track file record by its ID
         public async Task<LidarrTrackFile?> GetTrackFileAsync(int trackFileId)
         {
-            if (trackFileId <= 0) return null;
+            if (trackFileId <= 0)
+            {
+                Logger.Log("Invalid track file ID (<=0)", LogSeverity.Low, new { TrackFileId = trackFileId });
+                return null;
+            }
+            
+            Logger.Log($"Getting track file for ID: {trackFileId}", LogSeverity.Verbose, new { TrackFileId = trackFileId });
+            
             var relative = $"api/v1/trackfile/{trackFileId}";
             try
             {
@@ -271,10 +326,13 @@ namespace LidarrCompanion.Helpers
                     tf.Id = idp.GetInt32();
                 if (root.TryGetProperty("path", out var pathp) && pathp.ValueKind == JsonValueKind.String)
                     tf.Path = pathp.GetString() ?? string.Empty;
+                
+                Logger.Log($"Retrieved track file: {tf.Path}", LogSeverity.Verbose, new { TrackFileId = trackFileId, Path = tf.Path });
                 return tf;
             }
-            catch
+            catch (Exception ex)
             {
+                Logger.Log($"Failed to get track file {trackFileId}: {ex.Message}", LogSeverity.Medium, new { TrackFileId = trackFileId, Error = ex.Message });
                 return null;
             }
         }
@@ -282,6 +340,8 @@ namespace LidarrCompanion.Helpers
         // Lookup artists by term and return raw JSON objects as strings
         public async Task<IList<string>> LookupArtistsRawAsync(string term)
         {
+            Logger.Log($"Looking up artists with term: {term}", LogSeverity.Low, new { SearchTerm = term });
+            
             var relative = $"api/v1/artist/lookup?term={Uri.EscapeDataString(term)}";
             var json = await CallLidarrAsync(HttpMethod.Get, relative).ConfigureAwait(false);
 
@@ -299,12 +359,15 @@ namespace LidarrCompanion.Helpers
                 results.Add(doc.RootElement.GetRawText());
             }
 
+            Logger.Log($"Artist lookup returned {results.Count} results", LogSeverity.Low, new { SearchTerm = term, ResultCount = results.Count });
             return results;
         }
 
         // Create a new artist in Lidarr by POSTing the provided raw JSON body (from lookup)
         public async Task<LidarrArtist?> CreateArtistAsync(string artistJson)
         {
+            Logger.Log("Creating artist from JSON", LogSeverity.Low);
+            
             // Keep compatibility: forward to new overload by parsing minimal fields from provided JSON
             try
             {
@@ -322,11 +385,15 @@ namespace LidarrCompanion.Helpers
 
                 var folder = string.IsNullOrWhiteSpace(artistName) ? "Unknown" : artistName;
 
+                Logger.Log($"Parsed artist info from JSON: {artistName}", LogSeverity.Verbose, new { ArtistName = artistName, ForeignId = foreignId });
+
                 // rootFolderPath, qualityProfileId, metadataProfileId and monitored are not available in the raw lookup JSON so use defaults
                 return await CreateArtistAsync(artistName, foreignId, folder, "/mnt/Music/Albums", qualityProfileId: 1, metadataProfileId: 5, monitored: true, searchForMissingAlbums: true).ConfigureAwait(false);
             }
-            catch
+            catch (Exception ex)
             {
+                Logger.Log($"Failed to parse artist JSON, attempting direct POST: {ex.Message}", LogSeverity.Low, new { Error = ex.Message });
+                
                 // If parsing fails, attempt to post the raw string directly as before
                 var json = await CallLidarrAsync(HttpMethod.Post, "api/v1/artist", artistJson).ConfigureAwait(false);
                 try
@@ -341,10 +408,12 @@ namespace LidarrCompanion.Helpers
                     if (doc2.RootElement.TryGetProperty("id", out var id2) && id2.ValueKind == JsonValueKind.Number)
                         artist.Id = id2.GetInt32();
 
+                    Logger.Log($"Artist created via direct POST: {artist.ArtistName}", LogSeverity.Low, new { ArtistName = artist.ArtistName, ArtistId = artist.Id });
                     return artist;
                 }
-                catch
+                catch (Exception ex2)
                 {
+                    Logger.Log($"Failed to parse artist creation response: {ex2.Message}", LogSeverity.High, new { Error = ex2.Message });
                     return null;
                 }
             }
@@ -353,6 +422,8 @@ namespace LidarrCompanion.Helpers
         // New overload: construct the JSON payload from parameters and POST to create artist
         public async Task<LidarrArtist?> CreateArtistAsync(string artistName, string foreignArtistId, string folder, string rootFolderPath, int qualityProfileId = 1, int metadataProfileId = 5, bool monitored = true, bool searchForMissingAlbums = true)
         {
+            Logger.Log($"Creating artist: {artistName}", LogSeverity.Medium, new { ArtistName = artistName, ForeignArtistId = foreignArtistId, Folder = folder, RootFolder = rootFolderPath });
+            
             var payload = new
             {
                 artistName = artistName,
@@ -379,10 +450,12 @@ namespace LidarrCompanion.Helpers
                 if (doc.RootElement.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.Number)
                     artist.Id = id.GetInt32();
 
+                Logger.Log($"Artist created successfully: {artist.ArtistName} (ID: {artist.Id})", LogSeverity.Medium, new { ArtistName = artist.ArtistName, ArtistId = artist.Id });
                 return artist;
             }
-            catch
+            catch (Exception ex)
             {
+                Logger.Log($"Failed to parse artist creation response: {ex.Message}", LogSeverity.High, new { Error = ex.Message });
                 // If parsing fails, return null but do not throw further
                 return null;
             }
@@ -391,7 +464,12 @@ namespace LidarrCompanion.Helpers
         internal async Task<bool> ImportFilesAsync(List<ProposedAction> proposedActions)
         {
             if (proposedActions == null || proposedActions.Count == 0)
+            {
+                Logger.Log("No proposed actions to import", LogSeverity.Low);
                 return false;
+            }
+
+            Logger.Log($"Sending import command to Lidarr for {proposedActions.Count} files", LogSeverity.Medium, new { FileCount = proposedActions.Count });
 
             // Build files array - one entry per proposed action
             var files = new List<object>();
@@ -425,10 +503,12 @@ namespace LidarrCompanion.Helpers
             {
                 var json = await CallLidarrAsync(HttpMethod.Post, "api/v1/command", body).ConfigureAwait(false);
                 // if we got here the call succeeded
+                Logger.Log($"Import command sent successfully to Lidarr", LogSeverity.Medium, new { FileCount = proposedActions.Count });
                 return true;
             }
-            catch
+            catch (Exception ex)
             {
+                Logger.Log($"Import command failed: {ex.Message}", LogSeverity.High, new { FileCount = proposedActions.Count, Error = ex.Message });
                 return false;
             }
         }

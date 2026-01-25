@@ -33,15 +33,19 @@ namespace LidarrCompanion
             SetBusy("Getting files from Lidarr...");
             try
             {
+                Logger.Log("Fetching blocked/completed queue from Lidarr", LogSeverity.Medium);
                 var lidarr = new LidarrHelper();
                 var resultList = await lidarr.GetBlockedCompletedQueueAsync();
 
                 _queueRecords.Clear();
                 foreach (var record in resultList)
                     _queueRecords.Add(record);
+                
+                Logger.Log($"Retrieved {resultList.Count} queue records", LogSeverity.Low, new { Count = resultList.Count });
             }
             catch (Exception ex)
             {
+                Logger.Log($"Failed to get files from Lidarr: {ex.Message}", LogSeverity.High, ex);
                 MessageBox.Show($"Get files failed: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
             finally
@@ -205,14 +209,17 @@ namespace LidarrCompanion
             SetBusy("Getting artists from Lidarr...");
             try
             {
+                Logger.Log("Fetching all artists from Lidarr", LogSeverity.Medium);
                 var lidarr = new LidarrHelper();
                 var artists = await lidarr.GetAllArtistsAsync();
                 _artists = artists.ToList();
 
                 lbl_artistCount.Content = $"Artists: {_artists.Count}";
+                Logger.Log($"Successfully loaded {_artists.Count} artists", LogSeverity.Low, new { ArtistCount = _artists.Count });
             }
             catch (Exception ex)
             {
+                Logger.Log($"Failed to get artists: {ex.Message}", LogSeverity.High, ex);
                 MessageBox.Show($"Get artists failed: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
             finally
@@ -228,5 +235,75 @@ namespace LidarrCompanion
         private void btn_manualReleaseMatchToArtist_Click(object sender, RoutedEventArgs e) => OnManualMatchClicked(sender, e);
         private void btn_GetArtists_Click(object sender, RoutedEventArgs e) => OnGetArtistsClicked(sender, e);
 
+        /// <summary>
+        /// Opens the Cover Art Management window for the selected file(s) for testing purposes
+        /// </summary>
+        private void btn_CoverArt_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                // Get selected files from the list
+                var selectedFiles = list_Files_in_Release.SelectedItems.Cast<LidarrManualImportFile>().ToList();
+                
+                if (!selectedFiles.Any())
+                {
+                    MessageBox.Show("Please select one or more files from the 'Unimported Release Files' list.", 
+                        "No Files Selected", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                Logger.Log($"Opening Cover Art window for {selectedFiles.Count} file(s)", LogSeverity.Low, 
+                    new { FileCount = selectedFiles.Count });
+
+                // Create test ProposedActions from selected files
+                var testActions = new List<ProposedAction>();
+                var currentQueueRecord = list_QueueRecords.SelectedItem as LidarrQueueRecord;
+                
+                foreach (var file in selectedFiles)
+                {
+                    var action = new ProposedAction
+                    {
+                        Action = ProposalActionType.MoveToDestination,
+                        Path = file.Path,
+                        OriginalFileName = file.Name,
+                        OriginalRelease = currentQueueRecord?.Title ?? System.IO.Path.GetFileName(file.Path) ?? string.Empty,
+                        FileId = file.Id,
+                        DestinationName = "Test" // Dummy destination for testing
+                    };
+                    testActions.Add(action);
+                }
+
+                // Get destinations (or create empty list for testing)
+                var destinations = AppSettings.Current.ImportDestinations ?? new List<ImportDestination>();
+
+                // Open the Cover Art window
+                var coverArtWindow = new CoverArtWindow
+                {
+                    Owner = this
+                };
+
+                coverArtWindow.LoadActions(testActions, destinations, isTestMode: true);
+                var result = coverArtWindow.ShowDialog();
+
+                if (result == true)
+                {
+                    Logger.Log("Cover art window completed successfully", LogSeverity.Low);
+                    MessageBox.Show($"Cover art management completed for {selectedFiles.Count} file(s).", 
+                        "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                else
+                {
+                    Logger.Log("Cover art window was cancelled", LogSeverity.Low);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"Error opening cover art window: {ex.Message}", LogSeverity.High, ex);
+                MessageBox.Show($"Failed to open cover art window: {ex.Message}", 
+                    "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
     }
 }
+
