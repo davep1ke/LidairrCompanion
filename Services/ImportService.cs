@@ -19,8 +19,8 @@ namespace LidarrCompanion.Services
 
     public class ImportService
     {
-        private const int MaxTrackFetchAttempts = 20;
-        private const int TrackFetchDelayMs = 3000;
+        private const int MaxTrackFetchAttempts = 30;
+        private const int TrackFetchDelayMs = 5000;
 
         #region File Operations
 
@@ -49,10 +49,10 @@ namespace LidarrCompanion.Services
                 File.Copy(sourceFilePath, destFile, true);
 
                 var success = File.Exists(destFile);
-                Logger.Log(success ? $"Secondary copy successful: {destFile}" : $"Secondary copy verification failed: {destFile}", 
+                Logger.Log(success ? $"Secondary copy successful" : $"Secondary copy verification failed", 
                     success ? LogSeverity.Low : LogSeverity.High, 
                     new { Source = sourceFilePath, Destination = destFile },
-                    filePath: sourceFilePath);
+                    filePath: destFile);
                 
                 return success;
             }
@@ -80,16 +80,11 @@ namespace LidarrCompanion.Services
                 var destInfo = new FileInfo(destFile);
                 if (srcInfo.Length == destInfo.Length)
                 {
-                Logger.Log($"File already backed up (size match): {destFile}", LogSeverity.Verbose, new { Source = resolvedPath, Destination = destFile }, filePath: resolvedPath);
+                    Logger.Log($"File already backed up (size match): {destFile}", LogSeverity.Verbose, new { Source = resolvedPath, Destination = destFile }, filePath: resolvedPath);
                     return;
                 }
             }
 
-            PerformBackup(resolvedPath, destFile);
-        }
-
-        private void PerformBackup(string resolvedPath, string destFile)
-        {
             try
             {
                 Logger.Log($"Backing up file: {resolvedPath} -> {destFile}", LogSeverity.Verbose, new { Source = resolvedPath, Destination = destFile }, filePath: resolvedPath);
@@ -113,22 +108,6 @@ namespace LidarrCompanion.Services
                 throw;
             }
         }
-
-        /*private void TryDeleteEmptyFolder(string sourceFolder)
-        {
-            try
-            {
-                if (!string.IsNullOrWhiteSpace(sourceFolder) && Directory.Exists(sourceFolder) && !Directory.EnumerateFileSystemEntries(sourceFolder).Any())
-                {
-                    Directory.Delete(sourceFolder);
-                    Logger.Log($"Deleted empty source folder: {sourceFolder}", LogSeverity.Low, new { Folder = sourceFolder });
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Log($"Failed to delete empty source folder (non-fatal): {ex.Message}", LogSeverity.Low, new { Folder = sourceFolder, Error = ex.Message });
-            }
-        }*/
 
         #endregion
 
@@ -213,8 +192,36 @@ namespace LidarrCompanion.Services
                     return result;
             }
 
-            // Phase 2: Process actions
-            actionsSnapshot = await ProcessAllActions(actionsSnapshot, manualImportFiles, proposedActions, artistReleaseTracks, result, importRootSetting, lidarr);
+
+            // Pre-process: Check cover art requirements
+            if (!await ProcessCoverArtRequirements(actionsSnapshot, result))
+            {
+                Logger.Log("Cover art pre-processing aborted by user", LogSeverity.Medium);
+                return result;
+            }
+
+            // Unlink actions
+            actionsSnapshot = ProcessUnlinkActions(actionsSnapshot, manualImportFiles, proposedActions, importRootSetting, result);
+
+            // Dynamic destination actions (includes legacy mapping)
+            actionsSnapshot = ProcessDestinationActions(actionsSnapshot, manualImportFiles, proposedActions, result);
+
+            // Delete actions
+            actionsSnapshot = ProcessDeleteActions(actionsSnapshot, manualImportFiles, proposedActions, result);
+
+            // Import actions
+            var importGroups = actionsSnapshot.Where(a => a.Action == ProposalActionType.Import).GroupBy(a => a.OriginalRelease);
+            Logger.Log($"Processing {importGroups.Count()} import groups", LogSeverity.Medium, new { GroupCount = importGroups.Count() });
+
+            foreach (var group in importGroups)
+            {
+                await ProcessImportGroup(group, lidarr, manualImportFiles, proposedActions, artistReleaseTracks, result, actionsSnapshot);
+            }
+
+            Logger.Log($"Import actions completed - Success: {result.SuccessCount}, Failed: {result.FailCount}", LogSeverity.Medium, new { Success = result.SuccessCount, Failed = result.FailCount });
+
+            // VerifyImport actions - process verification retries
+            await ProcessVerifyImportActions(actionsSnapshot, lidarr, manualImportFiles, result);
 
             // Cleanup
             ClearAssignmentTrackers(assignedFileIds, assignedTrackIds, artistReleaseTracks);
@@ -252,39 +259,7 @@ namespace LidarrCompanion.Services
             }
         }
 
-        private async Task<List<ProposedAction>> ProcessAllActions(
-            List<ProposedAction> actionsSnapshot,
-            ObservableCollection<LidarrManualImportFile> manualImportFiles,
-            ObservableCollection<ProposedAction> proposedActions,
-            ObservableCollection<LidarrArtistReleaseTrack> artistReleaseTracks,
-            ImportResult result,
-            string importRootSetting,
-            LidarrHelper lidarr)
-        {
-            // Pre-process: Check cover art requirements
-            if (!await ProcessCoverArtRequirements(actionsSnapshot, result))
-            {
-                Logger.Log("Cover art pre-processing aborted by user", LogSeverity.Medium);
-                return new List<ProposedAction>();
-            }
 
-            // Unlink actions
-            actionsSnapshot = ProcessUnlinkActions(actionsSnapshot, manualImportFiles, proposedActions, importRootSetting, result);
-            if (actionsSnapshot == null) return new List<ProposedAction>();
-
-            // Dynamic destination actions (includes legacy mapping)
-            actionsSnapshot = ProcessDestinationActions(actionsSnapshot, manualImportFiles, proposedActions, result);
-            if (actionsSnapshot == null) return new List<ProposedAction>();
-
-            // Delete actions
-            actionsSnapshot = ProcessDeleteActions(actionsSnapshot, manualImportFiles, proposedActions, result);
-            if (actionsSnapshot == null) return new List<ProposedAction>();
-
-            // Import actions
-            await ProcessImportActions(lidarr, actionsSnapshot, manualImportFiles, proposedActions, artistReleaseTracks, result);
-
-            return actionsSnapshot;
-        }
 
         private void ClearAssignmentTrackers(HashSet<int> assignedFileIds, HashSet<int> assignedTrackIds, ObservableCollection<LidarrArtistReleaseTrack> artistReleaseTracks)
         {
@@ -348,7 +323,7 @@ namespace LidarrCompanion.Services
             var destinations = AppSettings.Current.ImportDestinations ?? new List<ImportDestination>();
 
             // Map legacy actions to destinations
-            MapLegacyActions(actionsSnapshot, destinations);
+            //MapLegacyActions(actionsSnapshot, destinations);
 
             // Process all MoveToDestination actions
             var moveActions = actionsSnapshot.Where(a => a.Action == ProposalActionType.MoveToDestination).ToList();
@@ -363,7 +338,7 @@ namespace LidarrCompanion.Services
                                              a.Action != ProposalActionType.Defer).ToList();
         }
 
-        private void MapLegacyActions(List<ProposedAction> actionsSnapshot, List<ImportDestination> destinations)
+        /*private void MapLegacyActions(List<ProposedAction> actionsSnapshot, List<ImportDestination> destinations)
         {
             var legacyNotSelected = actionsSnapshot.Where(a => a.Action == ProposalActionType.NotForImport).ToList();
             var legacyDefer = actionsSnapshot.Where(a => a.Action == ProposalActionType.Defer).ToList();
@@ -399,7 +374,7 @@ namespace LidarrCompanion.Services
                     action.ErrorMessage = $"No destination configured for {actionName}. Please add a destination in Settings.";
                 }
             }
-        }
+        }*/
 
         private bool ProcessDestinationGroup(
             IGrouping<string?, ProposedAction> destGroup,
@@ -617,137 +592,198 @@ namespace LidarrCompanion.Services
 
         #region Import Processing
 
-        private async Task ProcessImportActions(LidarrHelper lidarr,
-            List<ProposedAction> actionsSnapshot,
-            ObservableCollection<LidarrManualImportFile> manualImportFiles,
-            ObservableCollection<ProposedAction> proposedActions,
-            ObservableCollection<LidarrArtistReleaseTrack> artistReleaseTracks,
-            ImportResult result)
-        {
-            var importGroups = actionsSnapshot.Where(a => a.Action == ProposalActionType.Import).GroupBy(a => a.OriginalRelease);
-            var groupCount = importGroups.Count();
-
-            if (groupCount == 0)
-            {
-                Logger.Log("No Import actions to process", LogSeverity.Verbose);
-                return;
-            }
-
-            Logger.Log($"Processing {groupCount} import groups", LogSeverity.Medium, new { GroupCount = groupCount });
-
-            foreach (var group in importGroups)
-            {
-                await ProcessImportGroup(group, lidarr, manualImportFiles, proposedActions, artistReleaseTracks, result);
-            }
-
-            Logger.Log($"Import actions completed - Success: {result.SuccessCount}, Failed: {result.FailCount}", LogSeverity.Medium, new { Success = result.SuccessCount, Failed = result.FailCount });
-        }
-
-        private async Task ProcessImportGroup(IGrouping<string?, ProposedAction> group, LidarrHelper lidarr, ObservableCollection<LidarrManualImportFile> manualImportFiles, ObservableCollection<ProposedAction> proposedActions, ObservableCollection<LidarrArtistReleaseTrack> artistReleaseTracks, ImportResult result)
+        private async Task ProcessImportGroup(IGrouping<string?, ProposedAction> group, LidarrHelper lidarr, ObservableCollection<LidarrManualImportFile> manualImportFiles, ObservableCollection<ProposedAction> proposedActions, ObservableCollection<LidarrArtistReleaseTrack> artistReleaseTracks, ImportResult result, List<ProposedAction> actionsSnapshot)
         {
             var actionsForRelease = group.ToList();
-            Logger.Log($"Processing import group for release: {group.Key}", LogSeverity.Low, new { Release = group.Key, ActionCount = actionsForRelease.Count });
+            var releaseKey = group.Key;
+            Logger.Log($"Processing import group for release: {releaseKey}", LogSeverity.Low, new { Release = releaseKey, ActionCount = actionsForRelease.Count });
 
             try
             {
                 var success = await lidarr.ImportFilesAsync(actionsForRelease);
-                if (success)
+                if (!success)
                 {
-                    await ProcessSuccessfulImport(actionsForRelease, lidarr, manualImportFiles, result, group.Key);
+                    MarkImportGroupFailed(actionsForRelease, result, releaseKey, "Import failed (Lidarr returned failure)");
+                    return;
                 }
-                else
+
+                Logger.Log($"Lidarr import command succeeded for release: {releaseKey}", LogSeverity.Low, new { Release = releaseKey });
+
+                // Instead of blocking with retries, create VerifyImport actions
+                foreach (var action in actionsForRelease)
                 {
-                    MarkImportGroupAsFailed(actionsForRelease, result, group.Key);
+                    var verifyAction = new ProposedAction
+                    {
+                        Action = ProposalActionType.VerifyImport,
+                        OriginalFileName = action.OriginalFileName,
+                        OriginalRelease = action.OriginalRelease,
+                        MatchedArtist = action.MatchedArtist,
+                        MatchedTrack = action.MatchedTrack,
+                        MatchedRelease = action.MatchedRelease,
+                        TrackId = action.TrackId,
+                        FileId = action.FileId,
+                        ArtistId = action.ArtistId,
+                        AlbumId = action.AlbumId,
+                        AlbumReleaseId = action.AlbumReleaseId,
+                        Path = action.Path,
+                        DownloadId = action.DownloadId,
+                        Quality = action.Quality,
+                        RetryCount = 0,
+                        MaxRetries = MaxTrackFetchAttempts,
+                        ImportStatus = $"Post-Import Copy (0/{MaxTrackFetchAttempts})"
+                    };
+
+                    actionsSnapshot.Add(verifyAction);
+                    proposedActions.Add(verifyAction);
+                    Logger.Log($"Created VerifyImport action for track: {action.MatchedTrack}", LogSeverity.Verbose, new { TrackId = action.TrackId });
+
+                    // Mark original action as complete
+                    action.ImportStatus = "Success";
+                    result.SuccessCount++;
                 }
             }
             catch (Exception ex)
             {
-                MarkImportGroupAsException(actionsForRelease, result, group.Key, ex);
+                MarkImportGroupFailed(actionsForRelease, result, releaseKey, ex.Message, ex);
             }
         }
 
-        private async Task ProcessSuccessfulImport(List<ProposedAction> actionsForRelease, LidarrHelper lidarr, ObservableCollection<LidarrManualImportFile> manualImportFiles, ImportResult result, string? releaseKey)
+        private async Task<LidarrTrackFile?> TryRetrieveTrackFile(ProposedAction action, LidarrHelper lidarr)
         {
-            Logger.Log($"Lidarr import command succeeded for release: {releaseKey}", LogSeverity.Low, new { Release = releaseKey });
+            Logger.Log($"Attempting to retrieve track from Lidarr", LogSeverity.Verbose, new { TrackId = action.TrackId, Attempt = action.RetryCount + 1, Max = action.MaxRetries });
 
-            foreach (var a in actionsForRelease)
+            try
             {
-                await ProcessSingleImportVerification(a, lidarr, manualImportFiles, result);
-            }
-        }
+                var tracks = await lidarr.GetTracksByReleaseAsync(action.AlbumReleaseId).ConfigureAwait(false);
+                var matched = tracks?.FirstOrDefault(t => t.Id == action.TrackId);
 
-        private async Task ProcessSingleImportVerification(ProposedAction a, LidarrHelper lidarr, ObservableCollection<LidarrManualImportFile> manualImportFiles, ImportResult result)
-        {
-            Logger.Log($"Verifying import for track: {a.MatchedTrack}", LogSeverity.Verbose, new { TrackId = a.TrackId, AlbumReleaseId = a.AlbumReleaseId });
-
-            var tf = await TryRetrieveTrackFile(a, lidarr);
-
-            if (tf == null)
-            {
-                HandleFailedTrackRetrieval(a, manualImportFiles, result);
-                return;
-            }
-
-            MarkImportSuccess(a, result);
-            await TrySecondaryCopyForImport(a, tf);
-        }
-
-        private async Task<LidarrTrackFile?> TryRetrieveTrackFile(ProposedAction a, LidarrHelper lidarr)
-        {
-            for (int attempt = 1; attempt <= MaxTrackFetchAttempts; attempt++)
-            {
-                Logger.Log($"Attempt {attempt}/{MaxTrackFetchAttempts} to retrieve track from Lidarr", LogSeverity.Verbose, new { TrackId = a.TrackId, Attempt = attempt });
-
-                try
+                if (matched != null && matched.TrackFileId > 0)
                 {
-                    var tracks = await lidarr.GetTracksByReleaseAsync(a.AlbumReleaseId).ConfigureAwait(false);
-                    var matched = tracks?.FirstOrDefault(t => t.Id == a.TrackId);
-
-                    if (matched != null && matched.TrackFileId > 0)
+                    var tf = await lidarr.GetTrackFileAsync(matched.TrackFileId).ConfigureAwait(false);
+                    if (tf != null && !string.IsNullOrWhiteSpace(tf.Path))
                     {
-                        var tf = await lidarr.GetTrackFileAsync(matched.TrackFileId).ConfigureAwait(false);
-                        if (tf != null && !string.IsNullOrWhiteSpace(tf.Path))
-                        {
-                            Logger.Log($"Track file verified successfully: {tf.Path}", LogSeverity.Low, new { TrackFileId = tf.Id, Path = tf.Path });
-                            return tf;
-                        }
+                        Logger.Log($"Track file verified successfully: {tf.Path}", LogSeverity.Low, new { TrackFileId = tf.Id, Path = tf.Path });
+                        return tf;
                     }
                 }
-                catch (Exception ex)
-                {
-                    Logger.Log($"Failed to get track (attempt {attempt}): {ex.Message}", LogSeverity.Low, new { Attempt = attempt, Error = ex.Message });
-                }
-
-                if (attempt < MaxTrackFetchAttempts)
-                    await Task.Delay(TrackFetchDelayMs).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"Failed to get track: {ex.Message}", LogSeverity.Low, new { Attempt = action.RetryCount + 1, Error = ex.Message });
             }
 
             return null;
         }
 
-        private void HandleFailedTrackRetrieval(ProposedAction a, ObservableCollection<LidarrManualImportFile> manualImportFiles, ImportResult result)
+        private async Task ProcessVerifyImportActions(List<ProposedAction> actionsSnapshot, LidarrHelper lidarr, ObservableCollection<LidarrManualImportFile> manualImportFiles, ImportResult result)
         {
-            Logger.Log($"Could not retrieve track file after {MaxTrackFetchAttempts} attempts", LogSeverity.High, new { TrackId = a.TrackId, FileName = a.OriginalFileName });
-            a.ImportStatus = "Failed";
-            a.ErrorMessage = "Could not retrieve tracks for release from Lidarr after multiple attempts";
-            result.FailCount++;
-
-            var fileRowFail = manualImportFiles.FirstOrDefault(f => f.Id == a.FileId);
-            if (fileRowFail != null)
+            while (true)
             {
-                var dispatcher = Application.Current?.Dispatcher ?? System.Windows.Threading.Dispatcher.CurrentDispatcher;
-                dispatcher.BeginInvoke(new Action(() =>
+                // Get pending verifications (not yet successful or failed)
+                var verifyActions = actionsSnapshot
+                    .Where(a => a.Action == ProposalActionType.VerifyImport && 
+                                a.ImportStatus != "Success" && 
+                                a.ImportStatus != "Failed")
+                    .ToList();
+                    
+                if (verifyActions.Count == 0)
                 {
-                    try { if (manualImportFiles.Contains(fileRowFail)) manualImportFiles.Remove(fileRowFail); }
-                    catch { }
-                }));
-            }
-        }
+                    Logger.Log("No VerifyImport actions to process", LogSeverity.Verbose);
+                    return;
+                }
 
-        private void MarkImportSuccess(ProposedAction a, ImportResult result)
-        {
-            a.ImportStatus = "Success";
-            result.SuccessCount++;
+                Logger.Log($"Processing {verifyActions.Count} VerifyImport actions", LogSeverity.Medium, new { Count = verifyActions.Count });
+
+                var actionsToRequeue = new List<ProposedAction>();
+                var actionsProcessed = false;
+
+                foreach (var action in verifyActions)
+                {
+                    // Check if minimum retry delay has passed
+                    if (action.LastRetryAttempt.HasValue)
+                    {
+                        var timeSinceLastAttempt = DateTime.Now - action.LastRetryAttempt.Value;
+                        if (timeSinceLastAttempt.TotalMilliseconds < TrackFetchDelayMs)
+                        {
+                            Logger.Log($"Skipping verification - minimum delay not met", LogSeverity.Verbose, new { FileName = action.OriginalFileName, TimeSinceLastMs = timeSinceLastAttempt.TotalMilliseconds, RequiredMs = TrackFetchDelayMs });
+                            actionsToRequeue.Add(action);
+                            continue;
+                        }
+                    }
+
+                    action.LastRetryAttempt = DateTime.Now;
+                    action.RetryCount++;
+                    action.ImportStatus = $"Post-Import Copy ({action.RetryCount}/{action.MaxRetries})";
+
+                    Logger.Log($"Processing VerifyImport for: {action.OriginalFileName}", LogSeverity.Low, new { FileName = action.OriginalFileName, Attempt = action.RetryCount, Max = action.MaxRetries });
+
+                    var trackFile = await TryRetrieveTrackFile(action, lidarr);
+
+                    if (trackFile != null)
+                    {
+                        // Success - perform secondary copy
+                        action.ImportStatus = "Success";
+                        result.SuccessCount++;
+                        await TrySecondaryCopyForImport(action, trackFile);
+
+                        // Don't remove from actionsSnapshot - MainWindow will clean up based on Success status
+                        Logger.Log($"VerifyImport succeeded for: {action.OriginalFileName}", LogSeverity.Low, new { FileName = action.OriginalFileName });
+                        actionsProcessed = true;
+                    }
+                    else if (action.RetryCount >= action.MaxRetries)
+                    {
+                        // Max retries reached - mark as failed but keep in list
+                        Logger.Log($"VerifyImport max retries reached: {action.OriginalFileName}", LogSeverity.High, new { FileName = action.OriginalFileName, Attempts = action.RetryCount });
+                        action.ImportStatus = "Failed";
+                        action.ErrorMessage = $"Could not verify import after {action.MaxRetries} attempts. Click Import to retry.";
+                        result.FailCount++;
+
+                        var fileRowFail = manualImportFiles.FirstOrDefault(f => f.Id == action.FileId);
+                        if (fileRowFail != null)
+                        {
+                            var dispatcher = Application.Current?.Dispatcher ?? System.Windows.Threading.Dispatcher.CurrentDispatcher;
+                            dispatcher.BeginInvoke(new Action(() =>
+                            {
+                                try { if (manualImportFiles.Contains(fileRowFail)) manualImportFiles.Remove(fileRowFail); }
+                                catch { }
+                            }));
+                        }
+                        actionsProcessed = true;
+                    }
+                    else
+                    {
+                        // Requeue to end of list
+                        Logger.Log($"Requeueing VerifyImport action: {action.OriginalFileName}", LogSeverity.Verbose, new { FileName = action.OriginalFileName, Attempt = action.RetryCount });
+                        actionsToRequeue.Add(action);
+                    }
+                }
+
+                // Move failed verifications to the end
+                foreach (var action in actionsToRequeue)
+                {
+                    actionsSnapshot.Remove(action);
+                    actionsSnapshot.Add(action);
+                }
+
+                // If we have requeued actions but made no progress, wait before retrying
+                if (actionsToRequeue.Count > 0)
+                {
+                    if (!actionsProcessed)
+                    {
+                        Logger.Log($"No actions ready to process. Waiting {TrackFetchDelayMs}ms before retry", LogSeverity.Low, new { RequeuedCount = actionsToRequeue.Count });
+                        await Task.Delay(TrackFetchDelayMs);
+                    }
+                    else
+                    {
+                        Logger.Log($"Some actions processed. Continuing with {actionsToRequeue.Count} requeued actions", LogSeverity.Low, new { RequeuedCount = actionsToRequeue.Count });
+                    }
+                }
+                else
+                {
+                    // No more actions to process
+                    return;
+                }
+            }
         }
 
         private async Task TrySecondaryCopyForImport(ProposedAction a, LidarrTrackFile tf)
@@ -777,24 +813,15 @@ namespace LidarrCompanion.Services
             }
         }
 
-        private void MarkImportGroupAsFailed(List<ProposedAction> actionsForRelease, ImportResult result, string? releaseKey)
+        private void MarkImportGroupFailed(List<ProposedAction> actionsForRelease, ImportResult result, string? releaseKey, string errorMessage, Exception? ex = null)
         {
-            Logger.Log($"Lidarr import command reported failure for release: {releaseKey}", LogSeverity.High, new { Release = releaseKey });
-            foreach (var a in actionsForRelease)
+            var logMessage = ex != null ? $"Exception during import processing: {ex.Message}" : $"Lidarr import command reported failure for release: {releaseKey}";
+            Logger.Log(logMessage, LogSeverity.High, ex != null ? new { Release = releaseKey, Error = ex.Message } : new { Release = releaseKey });
+            
+            foreach (var action in actionsForRelease)
             {
-                a.ImportStatus = "Failed";
-                a.ErrorMessage = "Import failed (Lidarr returned failure)";
-                result.FailCount++;
-            }
-        }
-
-        private void MarkImportGroupAsException(List<ProposedAction> actionsForRelease, ImportResult result, string? releaseKey, Exception ex)
-        {
-            Logger.Log($"Exception during import processing: {ex.Message}", LogSeverity.High, new { Release = releaseKey, Error = ex.Message });
-            foreach (var a in actionsForRelease)
-            {
-                a.ImportStatus = "Failed";
-                a.ErrorMessage = ex.Message;
+                action.ImportStatus = "Failed";
+                action.ErrorMessage = errorMessage;
                 result.FailCount++;
             }
         }

@@ -81,7 +81,7 @@ namespace LidarrCompanion.Helpers
             }
         }
 
-        public async Task<IList<LidarrQueueRecord>> GetBlockedCompletedQueueAsync(int page = 1, int pageSize = 50)
+        public async Task<IList<LidarrQueueRecord>> GetBlockedCompletedQueueAsync(int page = 1, int pageSize = 100)
         {
             Logger.Log($"Getting blocked/completed queue (page {page}, size {pageSize})", LogSeverity.Low, new { Page = page, PageSize = pageSize });
             
@@ -341,8 +341,9 @@ namespace LidarrCompanion.Helpers
         public async Task<IList<string>> LookupArtistsRawAsync(string term)
         {
             Logger.Log($"Looking up artists with term: {term}", LogSeverity.Low, new { SearchTerm = term });
-            
-            var relative = $"api/v1/artist/lookup?term={Uri.EscapeDataString(term)}";
+
+            var relative = $"api/v1/artist/lookup?term={Uri.EscapeDataString(term)}"; 
+            //var relative = $"search?term={Uri.EscapeDataString(term)}";
             var json = await CallLidarrAsync(HttpMethod.Get, relative).ConfigureAwait(false);
 
             var results = new List<string>();

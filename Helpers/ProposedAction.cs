@@ -44,6 +44,12 @@ namespace LidarrCompanion.Helpers
 
         public bool IsImportFailed => !string.IsNullOrWhiteSpace(_errorMessage) || string.Equals(_importStatus, "Failed", StringComparison.OrdinalIgnoreCase);
 
+        // Retry tracking for VerifyImport actions
+        public int RetryCount { get; set; }
+        public int MaxRetries { get; set; }
+        public DateTime? LastRetryAttempt { get; set; }
+        public int? TrackFileIdToVerify { get; set; }
+
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string propName)
         {

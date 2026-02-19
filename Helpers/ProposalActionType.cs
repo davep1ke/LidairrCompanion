@@ -7,6 +7,7 @@ namespace LidarrCompanion.Helpers
         Defer,
         Unlink,
         Delete,
-        MoveToDestination // New: for dynamic destinations
+        MoveToDestination, // New: for dynamic destinations
+        VerifyImport // New: for post-import verification
     }
 }

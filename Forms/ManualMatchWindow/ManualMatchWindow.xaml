@@ -13,19 +13,21 @@
 
         <TextBlock x:Name="txt_Context" Grid.Row="0" TextWrapping="Wrap" Margin="0,0,0,8" />
 
-        <DockPanel Grid.Row="1" Margin="0,0,0,0">
-            <TextBox x:Name="txt_Search" Width="390" DockPanel.Dock="Left" />
-            <Button x:Name="btn_SearchExternal" Content="Search External" Width="100" Margin="0,0,0,0" Click="btn_SearchExternal_Click" DockPanel.Dock="Right"/>
+        <DockPanel Grid.Row="1" Margin="0,0,0,8">
             <Button x:Name="btn_Reset" Content="Reset" Width="60" Margin="0,0,0,0" Click="btn_Reset_Click" DockPanel.Dock="Right" />
+            <Button x:Name="btn_SearchExternal" Content="Search External" Width="100" Margin="0,0,4,0" Click="btn_SearchExternal_Click" DockPanel.Dock="Right"/>
+            <Button x:Name="btn_SearchMusicBrainz" Content="Search MusicBrainz" Width="130" Margin="0,0,4,0" Click="btn_SearchMusicBrainz_Click" DockPanel.Dock="Right"/>
+            <TextBox x:Name="txt_Search" Margin="0,0,4,0" />
         </DockPanel>
 
         <Grid Grid.Row="2" Margin="0,0,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="180" />
+                <ColumnDefinition Width="159.231" />
+                <ColumnDefinition Width="20.769"/>
             </Grid.ColumnDefinitions>
 
-            <ListView x:Name="list_Artists" Grid.Column="0" SelectionMode="Single" Margin="0,0,0,0">
+            <ListView x:Name="list_Artists" Grid.Column="0" SelectionMode="Single">
                 <ListView.View>
                     <GridView>
                         <GridViewColumn Header="Artist" Width="200" DisplayMemberBinding="{Binding DisplayName}" />
@@ -34,7 +36,7 @@
                 </ListView.View>
             </ListView>
 
-            <Image x:Name="img_Art" Grid.Column="1" Margin="0,0,0,0" />
+            <Image x:Name="img_Art" Grid.Column="1" Grid.ColumnSpan="2" />
 
         </Grid>
 

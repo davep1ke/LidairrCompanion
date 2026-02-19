@@ -16,13 +16,39 @@ namespace LidarrCompanion.Services
     {
         private readonly MediaPlayer _player = new MediaPlayer();
         private bool _isPlaying = false;
+        private bool _isDisposed = false;
+        private readonly object _lockObject = new object();
 
-        public bool IsPlaying => _isPlaying;
+        public bool IsPlaying
+        {
+            get
+            {
+                lock (_lockObject)
+                {
+                    return _isPlaying && !_isDisposed;
+                }
+            }
+        }
 
         public double Volume
         {
-            get => _player.Volume;
-            set => _player.Volume = Math.Max(0, Math.Min(1, value)); // Clamp between 0 and 1
+            get
+            {
+                if (_isDisposed) return 0;
+                try { return _player.Volume; }
+                catch (System.Runtime.InteropServices.SEHException) { return 0; }
+                catch { return 0; }
+            }
+            set
+            {
+                if (_isDisposed) return;
+                try { _player.Volume = Math.Max(0, Math.Min(1, value)); }
+                catch (System.Runtime.InteropServices.SEHException sehEx)
+                {
+                    Logger.Log($"SEH exception setting volume: {sehEx.Message}", LogSeverity.Low, new { Error = sehEx.Message });
+                }
+                catch { /* Ignore volume setting errors */ }
+            }
         }
 
         public FileAndAudioService()
@@ -33,33 +59,88 @@ namespace LidarrCompanion.Services
         // Play a file with optional server->local mapping. Throws exceptions when file not found or invalid.
         public void PlayMapped(string filePath, string? serverImportPath, string? localMapping)
         {
-            var resolved = FileOperationsHelper.ResolveMappedPath(filePath, SettingKey.LidarrImportPath, true);
-            if (string.IsNullOrWhiteSpace(resolved)) throw new ArgumentNullException(nameof(filePath));
-            if (!File.Exists(resolved)) throw new FileNotFoundException("Audio file not found", resolved);
+            lock (_lockObject)
+            {
+                if (_isDisposed)
+                    throw new ObjectDisposedException(nameof(FileAndAudioService));
 
-            Stop();
+                var resolved = FileOperationsHelper.ResolveMappedPath(filePath, SettingKey.LidarrImportPath, true);
+                if (string.IsNullOrWhiteSpace(resolved)) throw new ArgumentNullException(nameof(filePath));
+                if (!File.Exists(resolved)) throw new FileNotFoundException("Audio file not found", resolved);
 
-            _player.Open(new Uri(resolved));
-            _player.Play();
-            _isPlaying = true;
+                Stop();
 
-            _player.MediaEnded += OnMediaEnded;
+                try
+                {
+                    _player.Open(new Uri(resolved));
+                    _player.Play();
+                    _isPlaying = true;
+                    _player.MediaEnded += OnMediaEnded;
+                }
+                catch (System.Runtime.InteropServices.SEHException sehEx)
+                {
+                    _isPlaying = false;
+                    Logger.Log($"SEH exception during audio playback start: {sehEx.Message}", LogSeverity.Medium, new { Error = sehEx.Message, FilePath = resolved });
+                    throw new InvalidOperationException($"Failed to play audio file due to a native component error. The file may use an unsupported codec or be corrupted: {Path.GetFileName(resolved)}", sehEx);
+                }
+                catch (Exception ex)
+                {
+                    _isPlaying = false;
+                    Logger.Log($"Exception during audio playback start: {ex.Message}", LogSeverity.Low, new { Error = ex.Message, FilePath = resolved });
+                    throw;
+                }
+            }
         }
 
         private void OnMediaEnded(object? sender, EventArgs e)
         {
-            _isPlaying = false;
-            // ensure position reset
-            try { _player.Position = TimeSpan.Zero; } catch { }
+            lock (_lockObject)
+            {
+                if (_isDisposed) return;
+
+                _isPlaying = false;
+                
+                // ensure position reset
+                try
+                {
+                    _player.Position = TimeSpan.Zero;
+                }
+                catch (System.Runtime.InteropServices.SEHException sehEx)
+                {
+                    Logger.Log($"SEH exception resetting position on media end: {sehEx.Message}", LogSeverity.Low, new { Error = sehEx.Message });
+                }
+                catch { /* Ignore position reset errors */ }
+            }
         }
 
         public void Stop()
         {
-            if (_isPlaying)
+            lock (_lockObject)
             {
-                try { _player.Stop(); } catch { }
-                _isPlaying = false;
-                _player.MediaEnded -= OnMediaEnded;
+                if (_isDisposed) return;
+
+                if (_isPlaying)
+                {
+                    // Detach event handler first to prevent callbacks during stop
+                    try
+                    {
+                        _player.MediaEnded -= OnMediaEnded;
+                    }
+                    catch { /* Ignore event detach errors */ }
+
+                    // Stop playback
+                    try
+                    {
+                        _player.Stop();
+                    }
+                    catch (System.Runtime.InteropServices.SEHException sehEx)
+                    {
+                        Logger.Log($"SEH exception during stop: {sehEx.Message}", LogSeverity.Low, new { Error = sehEx.Message });
+                    }
+                    catch { /* Ignore stop errors */ }
+
+                    _isPlaying = false;
+                }
             }
         }
 
@@ -113,21 +194,59 @@ namespace LidarrCompanion.Services
 
         public void Dispose()
         {
-            try { Stop(); } catch { }
-            _player.Close();
+            lock (_lockObject)
+            {
+                if (_isDisposed) return;
+                _isDisposed = true;
+
+                // Stop playback first
+                try
+                {
+                    if (_isPlaying)
+                    {
+                        _player.MediaEnded -= OnMediaEnded;
+                        _player.Stop();
+                        _isPlaying = false;
+                    }
+                }
+                catch (System.Runtime.InteropServices.SEHException sehEx)
+                {
+                    Logger.Log($"SEH exception during dispose stop: {sehEx.Message}", LogSeverity.Low, new { Error = sehEx.Message });
+                }
+                catch { /* Ignore stop errors during disposal */ }
+
+                // Close the player
+                try
+                {
+                    _player.Close();
+                }
+                catch (System.Runtime.InteropServices.SEHException sehEx)
+                {
+                    Logger.Log($"SEH exception during player close: {sehEx.Message}", LogSeverity.Low, new { Error = sehEx.Message });
+                }
+                catch { /* Ignore close errors during disposal */ }
+            }
         }
 
         public void AdvanceBy(TimeSpan amount)
         {
-            if (!_isPlaying) return;
-            try
+            lock (_lockObject)
             {
-                var pos = _player.Position;
-                _player.Position = pos + amount;
-            }
-            catch
-            {
-                // ignore if cannot seek
+                if (_isDisposed || !_isPlaying) return;
+
+                try
+                {
+                    var pos = _player.Position;
+                    _player.Position = pos + amount;
+                }
+                catch (System.Runtime.InteropServices.SEHException sehEx)
+                {
+                    Logger.Log($"SEH exception during seek: {sehEx.Message}", LogSeverity.Low, new { Error = sehEx.Message });
+                }
+                catch
+                {
+                    // ignore if cannot seek
+                }
             }
         }
 
@@ -135,7 +254,20 @@ namespace LidarrCompanion.Services
         {
             get
             {
-                try { return _player.Position; } catch { return null; }
+                if (_isDisposed) return null;
+                
+                try
+                {
+                    return _player.Position;
+                }
+                catch (System.Runtime.InteropServices.SEHException)
+                {
+                    return null;
+                }
+                catch
+                {
+                    return null;
+                }
             }
         }
 

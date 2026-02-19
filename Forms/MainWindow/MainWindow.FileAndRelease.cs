@@ -599,10 +599,16 @@ namespace LidarrCompanion
                 // Toggle play/stop
                 if (_audioPlayer != null && _audioPlayer.IsPlaying)
                 {
-                    _audioPlayer.Stop();
-                    _audioPlayer.Dispose();
-                    _audioPlayer = null;
-                    btn_PlayTrack.Content = "Play Track";
+                    try
+                    {
+                        _audioPlayer.Stop();
+                    }
+                    finally
+                    {
+                        _audioPlayer.Dispose();
+                        _audioPlayer = null;
+                        btn_PlayTrack.Content = "Play Track";
+                    }
                     return;
                 }
 
@@ -611,6 +617,14 @@ namespace LidarrCompanion
                 {
                     _audioPlayer.PlayMapped(selectedFile.Path ?? string.Empty, serverImportPath, localMapping);
                     btn_PlayTrack.Content = "Stop";
+                }
+                catch (InvalidOperationException ex) when (ex.InnerException is System.Runtime.InteropServices.SEHException)
+                {
+                    // SEHException from native audio components - already logged in FileAndAudioService
+                    MessageBox.Show($"Audio playback failed due to a codec or driver issue.\n\n{ex.Message}", "Playback Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    _audioPlayer.Dispose();
+                    _audioPlayer = null;
+                    btn_PlayTrack.Content = "Play Track";
                 }
                 catch (Exception ex)
                 {

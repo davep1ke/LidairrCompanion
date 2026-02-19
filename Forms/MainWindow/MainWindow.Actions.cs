@@ -35,24 +35,38 @@ namespace LidarrCompanion
             SetBusy("Importing files to Lidarr...");
              try
              {
-                 // Snapshot to avoid concurrent modification
-                 var actionsSnapshot = new List<ProposedAction>(_proposedActions);
+                 // Create snapshot - note that ImportService may add VerifyImport actions during processing
+                 var actionsSnapshot = _proposedActions.ToList();
 
                  var result = await _importService.ImportAsync(actionsSnapshot, _manualImportFiles, _proposedActions, _artistReleaseTracks, _assignedFileIds, _assignedTrackIds);
 
-                // actionsSnapshot contains the same ProposedAction object references as _proposedActions
+                // After import, get the current state of _proposedActions which may include added VerifyImport actions
+                // We need to check all actions that were in the original snapshot OR were added during processing
+                var allProcessedActions = _proposedActions.Where(pa => 
+                    !string.IsNullOrWhiteSpace(pa.ImportStatus) &&
+                    (pa.ImportStatus.Equals("Success", StringComparison.OrdinalIgnoreCase) || 
+                     pa.ImportStatus.Equals("Failed", StringComparison.OrdinalIgnoreCase))
+                ).ToList();
+
                 int removedCount = 0;
                 int failedCount = 0;
 
-                // Count successes based on ImportStatus on the snapshot (covers actions that ImportService removed from the live collection)
-                foreach (var pa in actionsSnapshot)
+                // Process all actions with a status
+                foreach (var pa in allProcessedActions)
                 {
+                    Logger.Log($"Checking action: {pa.OriginalFileName}, Action={pa.Action}, Status={pa.ImportStatus}", LogSeverity.Verbose, new { FileName = pa.OriginalFileName, ActionType = pa.Action, Status = pa.ImportStatus });
+                    
                     if (string.Equals(pa.ImportStatus, "Success", StringComparison.OrdinalIgnoreCase))
                     {
                         removedCount++; // count this as processed successfully
                         if (_proposedActions.Contains(pa))
                         {
+                            Logger.Log($"Removing successful action from UI: {pa.OriginalFileName}", LogSeverity.Verbose, new { FileName = pa.OriginalFileName, ActionType = pa.Action });
                             _proposedActions.Remove(pa);
+                        }
+                        else
+                        {
+                            Logger.Log($"Action marked as Success but not found in _proposedActions: {pa.OriginalFileName}", LogSeverity.Medium, new { FileName = pa.OriginalFileName, ActionType = pa.Action });
                         }
                     }
                     else if (!string.IsNullOrWhiteSpace(pa.ImportStatus) && string.Equals(pa.ImportStatus, "Failed", StringComparison.OrdinalIgnoreCase))
@@ -75,7 +89,7 @@ namespace LidarrCompanion
                 }
                 else if (failedCount > 0)
                 {
-                    MessageBox.Show($"Import completed. Success: {removedCount}, Failed: {failedCount}", "Import Results", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    MessageBox.Show($"Import completed. Success: {removedCount}, Failed: {failedCount}\n\nFailed actions remain in the list. Click Import again to retry them.", "Import Results", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
                 else
                 {

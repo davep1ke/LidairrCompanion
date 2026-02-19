@@ -32,7 +32,7 @@ namespace LidarrCompanion
             // Wrap internal candidates in ManualMatchItem so the list can show DisplayName for both internal and external results
             foreach (var c in _internalCandidates)
             {
-                _internalItems.Add(new ManualMatchItem { IsExternal = false, DisplayName = c.ArtistName, Artist = c });
+                _internalItems.Add(new ManualMatchItem { SourceType = MatchSourceType.Internal, DisplayName = c.ArtistName, Artist = c });
             }
 
             // Initially show internal items
@@ -71,7 +71,7 @@ namespace LidarrCompanion
 
             list_Artists.MouseDoubleClick += (s, e) =>
             {
-                if (list_Artists.SelectedItem is ManualMatchItem mi && mi.Artist != null && !mi.IsExternal)
+                if (list_Artists.SelectedItem is ManualMatchItem mi && mi.Artist != null && mi.SourceType == MatchSourceType.Internal)
                 {
                     SelectedArtist = mi.Artist;
                     DialogResult = true;
@@ -134,6 +134,7 @@ namespace LidarrCompanion
             {
                 txt_Status.Text = message;
                 btn_SearchExternal.IsEnabled = false;
+                btn_SearchMusicBrainz.IsEnabled = false;
                 btn_Ok.IsEnabled = false;
                 btn_Reset.IsEnabled = false;
                 btn_Cancel.IsEnabled = false;
@@ -149,6 +150,7 @@ namespace LidarrCompanion
             {
                 txt_Status.Text = string.Empty;
                 btn_SearchExternal.IsEnabled = true;
+                btn_SearchMusicBrainz.IsEnabled = true;
                 btn_Reset.IsEnabled = true;
                 btn_Cancel.IsEnabled = true;
                 txt_Search.IsEnabled = true;
@@ -264,7 +266,16 @@ namespace LidarrCompanion
                                 description = $"{links.Count} link(s)";
                         }
 
-                        var item = new ManualMatchItem { IsExternal = true, DisplayName = name, Description = description, RawJson = r, Links = links, Images = images };
+                        // Extract foreignArtistId for External results
+                        string foreignId = string.Empty;
+                        if (doc.RootElement.TryGetProperty("foreignArtistId", out var fid) && fid.ValueKind == JsonValueKind.String)
+                            foreignId = fid.GetString() ?? string.Empty;
+                        else if (doc.RootElement.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String)
+                            foreignId = id.GetString() ?? string.Empty;
+                        else if (doc.RootElement.TryGetProperty("id", out var idn) && idn.ValueKind == JsonValueKind.Number)
+                            foreignId = idn.GetInt32().ToString();
+
+                        var item = new ManualMatchItem { SourceType = MatchSourceType.External, DisplayName = name, Description = description, ForeignId = foreignId, RawJson = r, Links = links, Images = images };
                         _externalItems.Add(item);
                     }
                     catch
@@ -295,39 +306,27 @@ namespace LidarrCompanion
         private async void btn_Ok_Click(object sender, RoutedEventArgs e)
         {
             if (_isBusy) return;
-
+                
             if (list_Artists.SelectedItem is ManualMatchItem mi)
             {
-                if (!mi.IsExternal && mi.Artist != null)
+                //internal results
+                if (mi.SourceType == MatchSourceType.Internal && mi.Artist != null)
                 {
                     SelectedArtist = mi.Artist;
                     DialogResult = true;
                     return;
                 }
-
-                if (mi.IsExternal && !string.IsNullOrWhiteSpace(mi.RawJson))
+                //external or musicbrainz results
+                if ((mi.SourceType == MatchSourceType.External || mi.SourceType == MatchSourceType.MusicBrainz) && !string.IsNullOrWhiteSpace(mi.DisplayName))
                 {
-                    SetBusy("Importing external artist...");
+                    SetBusy($"Importing {mi.SourceType.ToString().ToLower()} artist...");
                     try
                     {
-                        // Convert raw JSON to LidarrArtist minimally (artistName + id if present)
-                        using var doc = JsonDocument.Parse(mi.RawJson);
-                        var artistName = doc.RootElement.TryGetProperty("artistName", out var an) && an.ValueKind == JsonValueKind.String ? an.GetString() ?? string.Empty : string.Empty;
-
-                        // Try to get a foreignArtistId - fall back to id or generate GUID
-                        string foreignId;
-                        if (doc.RootElement.TryGetProperty("foreignArtistId", out var fid) && fid.ValueKind == JsonValueKind.String)
-                            foreignId = fid.GetString()!;
-                        else if (doc.RootElement.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String)
-                            foreignId = id.GetString()!;
-                        else if (doc.RootElement.TryGetProperty("id", out var idn) && idn.ValueKind == JsonValueKind.Number)
-                            foreignId = idn.GetInt32().ToString();
-                        else
-                            foreignId = System.Guid.NewGuid().ToString();
-
+                        var artistName = mi.DisplayName;
+                        var foreignId = !string.IsNullOrWhiteSpace(mi.ForeignId) ? mi.ForeignId : System.Guid.NewGuid().ToString();
                         var folder = string.IsNullOrWhiteSpace(artistName) ? "Unknown" : artistName;
 
-                        // Create artist in Lidarr by POSTing constructed values (payload construction moved into helper)
+                        // Create artist in Lidarr by POSTing constructed values
                         var lidarr = new LidarrHelper();
                         var created = await lidarr.CreateArtistAsync(artistName, foreignId, folder, "/mnt/Music/Albums", qualityProfileId: 1, metadataProfileId: 5, monitored: true, searchForMissingAlbums: true);
 
@@ -347,7 +346,7 @@ namespace LidarrCompanion
                     }
                     catch (System.Exception ex)
                     {
-                        MessageBox.Show($"Failed to parse selected external artist: {ex.Message}\n\n{ex}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                        MessageBox.Show($"Failed to import artist: {ex.Message}\n\n{ex}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                         return;
                     }
                     finally
@@ -373,17 +372,113 @@ namespace LidarrCompanion
             // Restore context text
             txt_Context.Text = _originalContext;
         }
+
+        private async void btn_SearchMusicBrainz_Click(object sender, RoutedEventArgs e)
+        {
+            if (_isBusy) return;
+
+            var term = txt_Search.Text?.Trim();
+            if (string.IsNullOrWhiteSpace(term)) return;
+
+            SetBusy($"Searching MusicBrainz for: {term}");
+            var musicBrainz = new MusicBrainzHelper();
+            try
+            {
+                var raw = await musicBrainz.SearchArtistsRawAsync(term);
+                _externalItems.Clear();
+
+                foreach (var r in raw)
+                {
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(r);
+                        
+                        var name = doc.RootElement.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() ?? r : r;
+
+                        var id = string.Empty;
+                        if (doc.RootElement.TryGetProperty("id", out var mbid) && mbid.ValueKind == JsonValueKind.String)
+                            id= mbid.GetString() ?? string.Empty;
+
+                        var description = string.Empty;
+                        if (doc.RootElement.TryGetProperty("disambiguation", out var dis) && dis.ValueKind == JsonValueKind.String)
+                            description = dis.GetString() ?? string.Empty;
+                        
+                        // Get type (e.g., "Person", "Group")
+                        if (doc.RootElement.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String)
+                        {
+                            var typeStr = type.GetString();
+                            if (!string.IsNullOrWhiteSpace(typeStr))
+                            {
+                                description = string.IsNullOrWhiteSpace(description) ? typeStr : $"{typeStr} - {description}";
+                            }
+                        }
+                        
+                        // Get country
+                        if (doc.RootElement.TryGetProperty("country", out var country) && country.ValueKind == JsonValueKind.String)
+                        {
+                            var countryStr = country.GetString();
+                            if (!string.IsNullOrWhiteSpace(countryStr))
+                            {
+                                description = string.IsNullOrWhiteSpace(description) ? countryStr : $"{description} ({countryStr})";
+                            }
+                        }
+
+                        var links = new List<string>();
+                        var images = new List<string>();
+
+                        var item = new ManualMatchItem 
+                        { 
+                            SourceType = MatchSourceType.MusicBrainz, 
+                            DisplayName = name, 
+                            ForeignId = id,
+                            Description = description, 
+                            RawJson = r, 
+                            Links = links, 
+                            Images = images 
+                        };
+                        _externalItems.Add(item);
+                    }
+                    catch
+                    {
+                        // skip malformed
+                    }
+                }
+
+                list_Artists.ItemsSource = _externalItems;
+                txt_Context.Text = string.IsNullOrWhiteSpace(term) ? "MusicBrainz Results" : $"MusicBrainz results for: {term}";
+
+                if (_externalItems.Count == 0)
+                    MessageBox.Show("No MusicBrainz results found.", "No Results", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (System.Exception ex)
+            {
+                MessageBox.Show($"MusicBrainz search failed: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                ClearBusy();
+            }
+        }
+    }
+
+    // Enum for match source type
+    public enum MatchSourceType
+    {
+        Internal,
+        External,
+        MusicBrainz
     }
 
     // Small helper model used by the ManualMatchWindow list
     public class ManualMatchItem
     {
-        public bool IsExternal { get; set; }
+        public MatchSourceType SourceType { get; set; }
         public string DisplayName { get; set; } = string.Empty;
         public string Description { get; set; } = string.Empty;
+        public string ForeignId { get; set; } = string.Empty;
         public string RawJson { get; set; } = string.Empty;
         public LidarrArtist? Artist { get; set; }
         public List<string> Links { get; set; } = new();
-        public List<string> Images{ get; set; } = new();
+        public List<string> Images { get; set; } = new();
     }
 }
