@@ -43,9 +43,20 @@ namespace LidarrCompanion
             {
                 btn_Ok.IsEnabled = list_Artists.SelectedItem != null;
 
-                if (list_Artists.SelectedItem is ManualMatchItem sel && sel.Images != null && sel.Images.Count > 0)
+                // Enable MusicBrainz button if there's a valid GUID
+                if (list_Artists.SelectedItem is ManualMatchItem sel)
                 {
-                    var url = sel.Images.FirstOrDefault(u => !string.IsNullOrWhiteSpace(u));
+                    string mbid = GetMusicBrainzId(sel);
+                    btn_OpenMusicBrainz.IsEnabled = !string.IsNullOrWhiteSpace(mbid);
+                }
+                else
+                {
+                    btn_OpenMusicBrainz.IsEnabled = false;
+                }
+
+                if (list_Artists.SelectedItem is ManualMatchItem sel2 && sel2.Images != null && sel2.Images.Count > 0)
+                {
+                    var url = sel2.Images.FirstOrDefault(u => !string.IsNullOrWhiteSpace(u));
                     if (!string.IsNullOrWhiteSpace(url))
                     {
                         try
@@ -458,6 +469,41 @@ namespace LidarrCompanion
             {
                 ClearBusy();
             }
+        }
+
+        private void btn_OpenMusicBrainz_Click(object sender, RoutedEventArgs e)
+        {
+            if (list_Artists.SelectedItem is ManualMatchItem mi)
+            {
+                string mbid = GetMusicBrainzId(mi);
+                if (!string.IsNullOrWhiteSpace(mbid))
+                {
+                    string url = $"https://musicbrainz.org/artist/{mbid}";
+                    try
+                    {
+                        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                        {
+                            FileName = url,
+                            UseShellExecute = true
+                        });
+                    }
+                    catch (System.Exception ex)
+                    {
+                        MessageBox.Show($"Failed to open browser: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    }
+                }
+            }
+        }
+
+        private static string GetMusicBrainzId(ManualMatchItem item)
+        {
+            return item.SourceType switch
+            {
+                MatchSourceType.Internal => item.Artist?.ForeignArtistId ?? string.Empty,
+                MatchSourceType.External => item.ForeignId,
+                MatchSourceType.MusicBrainz => item.ForeignId,
+                _ => string.Empty
+            };
         }
     }
 

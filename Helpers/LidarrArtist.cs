@@ -6,5 +6,7 @@
         public int Id { get; set; } //foreignArtistId ?
         // Filesystem path for the artist (if provided by the API)
         public string Path { get; set; } = string.Empty;
+        // MusicBrainz ID
+        public string ForeignArtistId { get; set; } = string.Empty;
     }
 }

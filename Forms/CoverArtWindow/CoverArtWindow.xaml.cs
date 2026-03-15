@@ -664,9 +664,9 @@ namespace LidarrCompanion
         {
             var hasImage = _currentImage != null;
             btn_SaveAndNext.IsEnabled = hasImage && _currentItem != null;
-            
-            // Enable Complete button only when all files have cover art
-            btn_Complete.IsEnabled = _items.Any() && _items.All(i => i.HasCoverArt);
+
+            // Enable Complete button if there are items (no requirement for all to have cover art)
+            btn_Complete.IsEnabled = _items.Any();
         }
 
         private void btn_Complete_Click(object sender, RoutedEventArgs e)

@@ -182,7 +182,8 @@ namespace LidarrCompanion.Helpers
                     {
                         ArtistName = item.GetProperty("artistName").GetString(),
                         Id = item.GetProperty("id").GetInt32(),
-                        Path = item.TryGetProperty("path", out var ap) && ap.ValueKind == JsonValueKind.String ? ap.GetString() ?? string.Empty : string.Empty
+                        Path = item.TryGetProperty("path", out var ap) && ap.ValueKind == JsonValueKind.String ? ap.GetString() ?? string.Empty : string.Empty,
+                        ForeignArtistId = item.TryGetProperty("foreignArtistId", out var fid) && fid.ValueKind == JsonValueKind.String ? fid.GetString() ?? string.Empty : string.Empty
                     });
                 }
             }

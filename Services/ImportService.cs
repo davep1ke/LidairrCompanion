@@ -236,6 +236,14 @@ namespace LidarrCompanion.Services
             {
                 a.ImportStatus = string.Empty;
                 a.ErrorMessage = string.Empty;
+
+                // Reset retry tracking for VerifyImport actions to allow fresh retry attempts
+                if (a.Action == ProposalActionType.VerifyImport)
+                {
+                    a.RetryCount = 0;
+                    a.LastRetryAttempt = null;
+                    Logger.Log($"Reset retry tracking for VerifyImport action: {a.OriginalFileName}", LogSeverity.Verbose, new { FileName = a.OriginalFileName });
+                }
             }
         }
 

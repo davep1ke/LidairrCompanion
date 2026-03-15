@@ -23,6 +23,7 @@
         <Grid Grid.Row="2" Margin="0,0,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="40" />
                 <ColumnDefinition Width="159.231" />
                 <ColumnDefinition Width="20.769"/>
             </Grid.ColumnDefinitions>
@@ -36,7 +37,13 @@
                 </ListView.View>
             </ListView>
 
-            <Image x:Name="img_Art" Grid.Column="1" Grid.ColumnSpan="2" />
+            <Button x:Name="btn_OpenMusicBrainz" Grid.Column="1" Content="🔗" Width="35" Height="35" 
+                    Margin="2,0,0,0" VerticalAlignment="Center" 
+                    Click="btn_OpenMusicBrainz_Click" 
+                    ToolTip="Open in MusicBrainz" 
+                    IsEnabled="False" />
+
+            <Image x:Name="img_Art" Grid.Column="2" Grid.ColumnSpan="2" />
 
         </Grid>
 
