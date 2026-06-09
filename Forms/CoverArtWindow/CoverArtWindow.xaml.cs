@@ -13,6 +13,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using static System.Net.Mime.MediaTypeNames;
 
 
 namespace LidarrCompanion
@@ -151,6 +152,8 @@ namespace LidarrCompanion
 
                 Logger.Log($"Added file to cover art check: {item.FileName}, HasCoverArt={hasCoverArt}", LogSeverity.Verbose);
             }
+
+            _items.OrderBy(item => item.HasCoverArt);
 
             if (!_items.Any())
             {
@@ -664,6 +667,9 @@ namespace LidarrCompanion
         {
             var hasImage = _currentImage != null;
             btn_SaveAndNext.IsEnabled = hasImage && _currentItem != null;
+
+            if (!hasImage && _items.Where(item => item.HasCoverArt == false).Count() == 1) { btn_SaveAndNext.Content = "Save & Continue"; }
+            else { btn_SaveAndNext.Content = "Save & Next"; }
 
             // Enable Complete button if there are items (no requirement for all to have cover art)
             btn_Complete.IsEnabled = _items.Any();
