@@ -34,92 +34,77 @@ namespace LidarrCompanion.Helpers
                 if (string.IsNullOrWhiteSpace(lastFolder))
                     continue;
 
-                var normalizedFolder = Normalize(lastFolder);
-
                 bool isSingleFile = FileAndAudioService.IsSingleFileRelease(record.OutputPath, importPath);
 
+                string rawName;
                 if (isSingleFile)
                 {
-                    string fileName = Path.GetFileName(record.OutputPath) ?? lastFolder;
-                    var nameWithoutExt = Path.GetFileNameWithoutExtension(fileName);
-                    if (string.IsNullOrWhiteSpace(nameWithoutExt))
+                    rawName = Path.GetFileNameWithoutExtension(record.OutputPath) ?? lastFolder;
+                    if (string.IsNullOrWhiteSpace(rawName))
                         continue;
-
-                    var normalizedName = Normalize(nameWithoutExt);
-
-                    var exact = artists.FirstOrDefault(a => Normalize(a.ArtistName) == normalizedName);
-                    if (exact != null)
-                    {
-                        record.Match = ReleaseMatchType.Exact;
-                        record.MatchedArtist = exact.ArtistName;
-                        continue;
-                    }
-
-                    var dashIndex = nameWithoutExt.IndexOf('-');
-                    if (dashIndex > 0)
-                    {
-                        var left = nameWithoutExt.Substring(0, dashIndex).Trim();
-                        var normalizedLeft = Normalize(left);
-                        var leftMatch = artists.FirstOrDefault(a => Normalize(a.ArtistName) == normalizedLeft);
-                        if (leftMatch != null)
-                        {
-                            record.Match = ReleaseMatchType.ArtistFirstFile;
-                            record.MatchedArtist = leftMatch.ArtistName;
-                            continue;
-                        }
-                    }
-
-                    var lastDash = nameWithoutExt.LastIndexOf('-');
-                    if (lastDash > 0 && lastDash < nameWithoutExt.Length - 1)
-                    {
-                        var right = nameWithoutExt.Substring(lastDash + 1).Trim();
-                        var normalizedRight = Normalize(right);
-                        var rightMatch = artists.FirstOrDefault(a => Normalize(a.ArtistName) == normalizedRight);
-                        if (rightMatch != null)
-                        {
-                            record.Match = ReleaseMatchType.AlbumFirstFile;
-                            record.MatchedArtist = rightMatch.ArtistName;
-                            continue;
-                        }
-                    }
                 }
                 else
                 {
-                    var exact = artists.FirstOrDefault(a => Normalize(a.ArtistName) == normalizedFolder);
-                    if (exact != null)
-                    {
-                        record.Match = ReleaseMatchType.Exact;
-                        record.MatchedArtist = exact.ArtistName;
-                        continue;
-                    }
+                    rawName = lastFolder;
+                }
 
-                    var dashIndex = lastFolder.IndexOf('-');
-                    if (dashIndex > 0)
-                    {
-                        var left = lastFolder.Substring(0, dashIndex).Trim();
-                        var normalizedLeft = Normalize(left);
-                        var leftMatch = artists.FirstOrDefault(a => Normalize(a.ArtistName) == normalizedLeft);
-                        if (leftMatch != null)
-                        {
-                            record.Match = ReleaseMatchType.ArtistFirst;
-                            record.MatchedArtist = leftMatch.ArtistName;
-                            continue;
-                        }
-                    }
+               
 
-                    var lastDash = lastFolder.LastIndexOf('-');
-                    if (lastDash > 0 && lastDash < lastFolder.Length - 1)
-                    {
-                        var right = lastFolder.Substring(lastDash + 1).Trim();
-                        var normalizedRight = Normalize(right);
-                        var rightMatch = artists.FirstOrDefault(a => Normalize(a.ArtistName) == normalizedRight);
-                        if (rightMatch != null)
-                        {
-                            record.Match = ReleaseMatchType.AlbumFirst;
-                            record.MatchedArtist = rightMatch.ArtistName;
-                            continue;
-                        }
-                    }
+                string Norm(string s) => Normalize(s);
+
+                // 1. Exact match on full name
+                var exact = artists.FirstOrDefault(a => Norm(a.ArtistName) == Norm(rawName));
+                if (exact != null)
+                {
+                    record.Match = ReleaseMatchType.Exact;
+                    record.MatchedArtist = exact.ArtistName;
+                    continue;
+                }
+
+                // 2. Dash-split matches: left side (artist - album) and right side (album - artist)
+                var dashIndex = rawName.IndexOf('-');
+                var lastDash = rawName.LastIndexOf('-');
+
+                var leftPart = dashIndex > 0 ? rawName[..dashIndex].Trim() : null;
+                var rightPart = lastDash > 0 && lastDash < rawName.Length - 1 ? rawName[(lastDash + 1)..].Trim() : null;
+
+                var leftMatch = leftPart != null
+                    ? artists.FirstOrDefault(a => Norm(a.ArtistName) == Norm(leftPart))
+                    : null;
+
+                if (leftMatch != null)
+                {
+                    record.Match = ReleaseMatchType.ArtistFirst;
+                    record.MatchedArtist = leftMatch.ArtistName;
+                    continue;
+                }
+
+                var rightMatch = rightPart != null
+                    ? artists.FirstOrDefault(a => Norm(a.ArtistName) == Norm(rightPart))
+                    : null;
+
+                if (rightMatch != null)
+                {
+                    record.Match = ReleaseMatchType.AlbumFirst;
+                    record.MatchedArtist = rightMatch.ArtistName;
+                    continue;
+                }
+
+                // 3. Partial fallback: artist name matches the start of the full name,
+                //    regardless of where any hyphen falls
+                var normalizedRaw = Norm(rawName);
+                var partialMatch = artists
+                    .Where(a => !string.IsNullOrWhiteSpace(a.ArtistName))
+                    .Select(a => (Artist: a, NormName: Norm(a.ArtistName)))
+                    .Where(x => normalizedRaw.StartsWith(x.NormName, StringComparison.Ordinal))
+                    .OrderByDescending(x => x.NormName.Length)   // prefer the longest (most specific) match
+                    .Select(x => x.Artist)
+                    .FirstOrDefault();
+
+                if (partialMatch != null)
+                {
+                    record.Match = ReleaseMatchType.Partial;
+                    record.MatchedArtist = partialMatch.ArtistName;
                 }
             }
         }

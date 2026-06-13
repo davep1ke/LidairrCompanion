@@ -147,13 +147,13 @@ namespace LidarrCompanion
                     Artist = artist,
                     Album = album
                 };
-
-                _items.Add(item);
+                
+                //add at start or end to make the list ordered. 
+                if (!hasCoverArt) { _items.Add(item); } else { _items.Insert(0, item); }
 
                 Logger.Log($"Added file to cover art check: {item.FileName}, HasCoverArt={hasCoverArt}", LogSeverity.Verbose);
             }
 
-            _items.OrderBy(item => item.HasCoverArt);
 
             if (!_items.Any())
             {
@@ -604,7 +604,17 @@ namespace LidarrCompanion
             if (_currentItem != null && _currentImage != null)
             {
                 SaveCoverArt(_currentItem, _currentImage);
-                SelectNextItem();
+
+                if (_items.Where(item => item.HasCoverArt == false).Count() == 0)
+                {
+                    IsCompleted = true;
+                    DialogResult = true;
+                    Close();
+                }
+                else
+                {
+                    SelectNextItem();
+                }
             }
         }
 
@@ -668,7 +678,8 @@ namespace LidarrCompanion
             var hasImage = _currentImage != null;
             btn_SaveAndNext.IsEnabled = hasImage && _currentItem != null;
 
-            if (!hasImage && _items.Where(item => item.HasCoverArt == false).Count() == 1) { btn_SaveAndNext.Content = "Save & Continue"; }
+            if (hasImage && _items.Where(item => item.HasCoverArt == false).Count() == 1) 
+            { btn_SaveAndNext.Content = "Save & Finish"; }
             else { btn_SaveAndNext.Content = "Save & Next"; }
 
             // Enable Complete button if there are items (no requirement for all to have cover art)

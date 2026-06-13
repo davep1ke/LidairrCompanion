@@ -45,13 +45,11 @@
                         </DataTrigger>
 
                         <!-- Single-file matches: blue / lightblue -->
-                        <DataTrigger Binding="{Binding Match}" Value="{x:Static helpers:ReleaseMatchType.ArtistFirstFile}">
+                        <DataTrigger Binding="{Binding Match}" Value="{x:Static helpers:ReleaseMatchType.Partial}">
                             <Setter Property="Background" Value="Blue" />
                             <Setter Property="Foreground" Value="White" />
                         </DataTrigger>
-                        <DataTrigger Binding="{Binding Match}" Value="{x:Static helpers:ReleaseMatchType.AlbumFirstFile}">
-                            <Setter Property="Background" Value="LightBlue" />
-                        </DataTrigger>
+
                         
                         <!-- Selection and hover states - these have HIGHER priority than data-driven colors above -->
                         <MultiTrigger>

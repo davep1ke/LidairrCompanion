@@ -199,10 +199,10 @@ namespace LidarrCompanion.Helpers
                 button.Style = style;
             }
 
-            // Theme buttons inside ItemsControl DataTemplates
+            // Theme buttons and other items inside ItemsControl DataTemplates
             foreach (var itemsControl in FindVisualChildren<ItemsControl>(window))
             {
-                ApplyItemsControlButtonTheme(itemsControl, buttonBackground, textBrush, buttonBorder, hoverBackground, buttonDisabledBackground, disabledTextBrush, borderBrush);
+                ApplyItemsControlTheme(itemsControl, buttonBackground, textBrush, buttonBorder, hoverBackground, buttonDisabledBackground, disabledTextBrush, borderBrush);
             }
 
             // ComboBoxes with dropdown theming
@@ -345,7 +345,7 @@ namespace LidarrCompanion.Helpers
             element.Resources.Add(typeof(ScrollBar), scrollBarStyle);
         }
 
-        private static void ApplyItemsControlButtonTheme(ItemsControl itemsControl, Brush buttonBackground, Brush textBrush, Brush buttonBorder, Brush hoverBackground, Brush buttonDisabledBackground, Brush disabledTextBrush, Brush borderBrush)
+        private static void ApplyItemsControlTheme(ItemsControl itemsControl, Brush buttonBackground, Brush textBrush, Brush buttonBorder, Brush hoverBackground, Brush buttonDisabledBackground, Brush disabledTextBrush, Brush borderBrush)
         {
             if (itemsControl == null || itemsControl.ItemsSource == null) return;
 
@@ -376,8 +376,10 @@ namespace LidarrCompanion.Helpers
 
             // TextBlock style for button content
             var textBlockStyle = new Style(typeof(TextBlock));
-            textBlockStyle.Setters.Add(new Setter(TextBlock.ForegroundProperty, textBrush));
-            
+
+            textBlockStyle.Setters.Add(new Setter(TextBlock.ForegroundProperty, textBrush)); // new SolidColorBrush(Color.FromRgb(255,100,100)))); //
+
+
             if (itemsControl.Resources.Contains(typeof(TextBlock)))
                 itemsControl.Resources.Remove(typeof(TextBlock));
                 

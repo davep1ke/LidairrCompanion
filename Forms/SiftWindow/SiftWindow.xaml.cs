@@ -15,7 +15,7 @@ namespace LidarrCompanion
 {
     public partial class SiftWindow : Window
     {
-        private bool _allowClose = false;
+//        private bool _allowClose = false;
         private ObservableCollection<SiftTrack> _allTracks = new();
         private ObservableCollection<SiftTrack> _nextTracks = new();
         private SiftTrack? _currentTrack;
@@ -664,21 +664,21 @@ namespace LidarrCompanion
             slider_Progress.Value = 0;
         }
 
-        public void AllowClose()
+        /*public void AllowClose()
         {
             _allowClose = true;
-        }
+        }*/
 
         private void Window_Closing(object sender, CancelEventArgs e)
         {
             _progressTimer?.Stop();
             StopPlayback();
             
-            if (!_allowClose)
+           /* if (!_allowClose)
             {
                 e.Cancel = true;
                 Hide();
-            }
+            }*/
         }
     }
 }

@@ -9,8 +9,9 @@ namespace LidarrCompanion.Helpers
         Exact = 1,
         ArtistFirst = 2,      // "Artist - Album" (folder)
         AlbumFirst = 3,       // "Album - Artist" (folder)
-        ArtistFirstFile = 4,  // "Artist - Album" (single file)
-        AlbumFirstFile = 5    // "Album - Artist" (single file)
+        //ArtistFirstFile = 4,  // "Artist - Album" (single file)
+        //AlbumFirstFile = 5,    // "Album - Artist" (single file)
+        Partial = 6
     }
 
     public class LidarrQueueRecord : INotifyPropertyChanged

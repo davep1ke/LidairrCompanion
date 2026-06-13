@@ -185,6 +185,7 @@
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
                                 <TextBlock Text="{Binding FileName}" 
+                                          Foreground="Gray"
                                           TextWrapping="Wrap" 
                                           Margin="0,2"
                                           Padding="5,2"/>

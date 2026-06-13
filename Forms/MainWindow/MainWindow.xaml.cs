@@ -112,7 +112,7 @@ namespace LidarrCompanion
             _logWindow?.Close();
             
             // Allow sift window to close when main window closes
-            _siftWindow?.AllowClose();
+            //_siftWindow?.AllowClose();
             _siftWindow?.Close();
         }
 
@@ -296,20 +296,15 @@ namespace LidarrCompanion
 
         private void btn_ToggleSiftWindow_Click(object sender, RoutedEventArgs e)
         {
-            if (_siftWindow == null)
+            if (_siftWindow != null)
             {
-                _siftWindow = new SiftWindow();
+                _siftWindow.Close() ;
             }
+            
+            _siftWindow = new SiftWindow();
+            _siftWindow.ShowDialog();
+            _siftWindow.Close();
 
-            if (_siftWindow.IsVisible)
-            {
-                _siftWindow.Hide();
-            }
-            else
-            {
-                _siftWindow.Show();
-                _siftWindow.Activate();
-            }
         }
     }
 }
