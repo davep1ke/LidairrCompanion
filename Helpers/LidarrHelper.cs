@@ -1,5 +1,6 @@
 using LidarrCompanion.Models;
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace LidarrCompanion.Helpers
@@ -81,7 +82,7 @@ namespace LidarrCompanion.Helpers
             }
         }
 
-        public async Task<IList<LidarrQueueRecord>> GetBlockedCompletedQueueAsync(int page = 1, int pageSize = 100)
+        public async Task<IList<LidarrQueueRecord>> GetBlockedCompletedQueueAsync(int page = 1, int pageSize = 200)
         {
             Logger.Log($"Getting blocked/completed queue (page {page}, size {pageSize})", LogSeverity.Low, new { Page = page, PageSize = pageSize });
             
@@ -89,16 +90,30 @@ namespace LidarrCompanion.Helpers
             var json = await CallLidarrAsync(HttpMethod.Get, relative).ConfigureAwait(false);
 
             var results = new List<LidarrQueueRecord>();
+            // Track status/state counts for reporting at end of processing
+            var statusCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
             using var doc = JsonDocument.Parse(json);
             if (doc.RootElement.TryGetProperty("records", out var records))
             {
                 foreach (var record in records.EnumerateArray())
                 {
+                    string stack = record.ToString();
                     var status = record.GetProperty("status").GetString();
-                    var trackedDownloadState = record.GetProperty("trackedDownloadState").GetString();
+                    var state = record.GetProperty("trackedDownloadState").GetString();
+                    string firstStatusMessage = "";
+                    try
+                    {
+                        firstStatusMessage = record.GetProperty("statusMessages")[0].GetProperty("title").GetString();
+                    }
+                    catch { }
 
-                    if (status == "completed" && trackedDownloadState == "importBlocked")
+                    // Track this record's status/state combination
+                    var key = $"{status}/{state}";
+                    if (statusCounts.ContainsKey(key)) statusCounts[key]++;
+                    else statusCounts[key] = 1;
+
+                    if (status == "completed" && state == "importBlocked")
                     {
                         results.Add(new LidarrQueueRecord
                         {
@@ -108,10 +123,25 @@ namespace LidarrCompanion.Helpers
                             DownloadId = record.GetProperty("downloadId").GetString()
                         });
                     }
+                    else if (status == "completed" && state == "importFailed")
+                    {
+                        //TODO - figure out how to import these. they are currently in /mnt/Complete ?
+                        Logger.Log($"Import to Lidarr has failed. Error: {firstStatusMessage}", LogSeverity.Verbose, new { s = stack});
+                    }
+                    else if (status == "completed" && state == "importPending")
+                    {
+                        Logger.Log($"Import to Lidarr is Pending. Error: {firstStatusMessage}", LogSeverity.Verbose, new { s = stack });
+                    }
+
+                    else
+                    {
+                        Logger.Log($"Unmapped status/state {status}/{state}. Error: {firstStatusMessage}. Stack: {stack}", LogSeverity.Medium);
+                    }
                 }
             }
-
-            Logger.Log($"Retrieved {results.Count} blocked/completed queue records", LogSeverity.Low, new { Count = results.Count });
+            // Log summary of status/state counts collected during processing
+            var summary = string.Join(Environment.NewLine, statusCounts.Select(kvp => $"{kvp.Key}={kvp.Value}"));
+            Logger.Log($"Retrieved {results.Count} blocked/completed queue records.{Environment.NewLine}StatusSummary:{Environment.NewLine}{summary}", LogSeverity.Low, new { Count = results.Count, StatusSummary = statusCounts });
             return results;
         }
 
