@@ -1,0 +1,37 @@
+name: Build
+
+# Only the migrated Blazor app (LidarrCompanion.Core, .Web, .Core.Tests) is built here - the
+# original LidarrCompanion.csproj is a Windows-only WPF app (UseWPF) kept as an untouched
+# fallback per CLAUDE.md, and doesn't build on the Linux runners this workflow uses. Building
+# LidarrCompanion.sln directly would try to build that project too and fail for reasons that have
+# nothing to do with the actual web app.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build Web
+        run: dotnet build LidarrCompanion.Web/LidarrCompanion.Web.csproj --configuration Release
+
+      - name: Test Core
+        run: dotnet test LidarrCompanion.Core.Tests/LidarrCompanion.Core.Tests.csproj --configuration Release
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t lidarrcompanion:ci .
