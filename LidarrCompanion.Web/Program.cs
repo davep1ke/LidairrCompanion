@@ -92,7 +92,12 @@ app.UseAuthorization();
 
 app.UseAntiforgery();
 
-app.MapStaticAssets();
+// AllowAnonymous is required here despite the FallbackPolicy already existing: static assets have
+// no [AllowAnonymous] attribute of their own, so without this every CSS/JS request - including
+// _framework/blazor.web.js, which the login page itself needs just to become interactive - gets
+// redirected to /login instead of served. That left the login page permanently unstyled and
+// non-interactive for anyone without a valid cookie already, i.e. everyone on their first visit.
+app.MapStaticAssets().AllowAnonymous();
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 
