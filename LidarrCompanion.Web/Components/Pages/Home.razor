@@ -1,0 +1,22 @@
+@page "/"
+@rendermode InteractiveServer
+@inject TriageService Triage
+
+<PageTitle>LidarrCompanion</PageTitle>
+
+<div class="home-page">
+    <h1>Welcome to LidarrCompanion</h1>
+    <p>Use the navigation on the left to import new files, sift through tracks, or manage settings.</p>
+</div>
+
+@code {
+    // Fire-and-forget: kick off the queue/artist load (and the background prefetch it queues up)
+    // as soon as the app is first opened, so it's likely already warm by the time the user
+    // navigates to Import. Only once per app lifetime - TriageService is a singleton, so revisiting
+    // Home later shouldn't silently re-hit Lidarr; Import's Refresh button is the explicit re-run.
+    protected override void OnInitialized()
+    {
+        if (!Triage.HasLoadedOnce)
+            _ = Triage.RefreshAsync();
+    }
+}

@@ -1,0 +1,309 @@
+@using System.Text.Json
+@inject IJSRuntime JS
+
+<div class="modal-backdrop">
+    <div class="modal-dialog">
+        <h2>Select Artist</h2>
+        <p class="modal-context">@_contextText</p>
+
+        <div class="manual-match-search">
+            <input @bind="_searchTerm" @bind:event="oninput" @onkeydown="OnSearchKeyDown" placeholder="Search..." />
+            <button @onclick="SearchMusicBrainz" disabled="@_isBusy">Search MusicBrainz</button>
+            <button @onclick="SearchExternal" disabled="@_isBusy">Search External</button>
+            <button @onclick="Reset" disabled="@_isBusy">Reset</button>
+        </div>
+
+        <div class="manual-match-body">
+            <table class="manual-match-table">
+                <thead><tr><th>Artist</th><th>Description</th></tr></thead>
+                <tbody>
+                    @foreach (var item in FilteredItems)
+                    {
+                        <tr class="@(item == _selected ? "selected" : "")" @onclick="() => Select(item)" @ondblclick="() => SelectAndMaybeConfirm(item)">
+                            <td>@item.DisplayName</td>
+                            <td>@item.Description</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+
+            <div class="manual-match-preview">
+                @if (_selected is not null)
+                {
+                    var mbid = GetMusicBrainzId(_selected);
+                    if (!string.IsNullOrWhiteSpace(mbid))
+                    {
+                        <a href="@($"https://musicbrainz.org/artist/{mbid}")" target="_blank" rel="noopener">Open in MusicBrainz</a>
+                    }
+                }
+                @if (!string.IsNullOrWhiteSpace(_previewImageUrl))
+                {
+                    <img src="@_previewImageUrl" alt="" />
+                }
+            </div>
+        </div>
+
+        <p class="modal-status">@_statusMessage</p>
+
+        <div class="modal-actions">
+            <button @onclick="Confirm" disabled="@(_selected is null || _isBusy)">OK</button>
+            <button @onclick="Cancel" disabled="@_isBusy">Cancel</button>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public IEnumerable<LidarrArtist> Candidates { get; set; } = Array.Empty<LidarrArtist>();
+    [Parameter] public string ReleasePath { get; set; } = string.Empty;
+    [Parameter] public EventCallback<LidarrArtist?> OnClosed { get; set; }
+
+    private enum MatchSourceType { Internal, External, MusicBrainz }
+
+    private sealed class ManualMatchItem
+    {
+        public MatchSourceType SourceType { get; set; }
+        public string DisplayName { get; set; } = string.Empty;
+        public string Description { get; set; } = string.Empty;
+        public string ForeignId { get; set; } = string.Empty;
+        public LidarrArtist? Artist { get; set; }
+        public List<string> Images { get; set; } = new();
+    }
+
+    private readonly List<ManualMatchItem> _internalItems = new();
+    private readonly List<ManualMatchItem> _externalItems = new();
+    private bool _showingExternal;
+    private string _searchTerm = string.Empty;
+    private string _contextText = string.Empty;
+    private string _statusMessage = string.Empty;
+    private string? _previewImageUrl;
+    private ManualMatchItem? _selected;
+    private bool _isBusy;
+
+    private IEnumerable<ManualMatchItem> FilteredItems
+    {
+        get
+        {
+            var source = _showingExternal ? _externalItems : _internalItems;
+            if (string.IsNullOrWhiteSpace(_searchTerm)) return source;
+            return source.Where(i => i.DisplayName.Contains(_searchTerm, StringComparison.OrdinalIgnoreCase)
+                || (!string.IsNullOrWhiteSpace(i.Description) && i.Description.Contains(_searchTerm, StringComparison.OrdinalIgnoreCase)));
+        }
+    }
+
+    protected override void OnParametersSet()
+    {
+        _internalItems.Clear();
+        foreach (var c in Candidates)
+            _internalItems.Add(new ManualMatchItem { SourceType = MatchSourceType.Internal, DisplayName = c.ArtistName, Artist = c });
+
+        _contextText = string.IsNullOrWhiteSpace(ReleasePath) ? "Internal Artists" : $"{ReleasePath} (Internal Artists)";
+        _searchTerm = ExtractInitialSearchTerm(ReleasePath);
+    }
+
+    private static string ExtractInitialSearchTerm(string? releasePath)
+    {
+        if (string.IsNullOrWhiteSpace(releasePath)) return string.Empty;
+        var idx = releasePath.IndexOf('-');
+        return (idx > 0 ? releasePath[..idx] : releasePath).Trim();
+    }
+
+    private void OnSearchKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") _ = SearchMusicBrainz();
+    }
+
+    private void Select(ManualMatchItem item)
+    {
+        _selected = item;
+        _previewImageUrl = null;
+
+        if (item.Images.Count > 0)
+        {
+            var url = item.Images.FirstOrDefault(u => !string.IsNullOrWhiteSpace(u));
+            if (!string.IsNullOrWhiteSpace(url))
+            {
+                var lidarrUrl = AppSettings.GetValue(SettingKey.LidarrURL);
+                _previewImageUrl = lidarrUrl.TrimEnd('/') + url;
+            }
+        }
+    }
+
+    private async Task SelectAndMaybeConfirm(ManualMatchItem item)
+    {
+        Select(item);
+        if (item.SourceType == MatchSourceType.Internal && item.Artist != null)
+        {
+            await Confirm();
+        }
+    }
+
+    private async Task SearchExternal()
+    {
+        if (_isBusy || string.IsNullOrWhiteSpace(_searchTerm)) return;
+        _isBusy = true;
+        _statusMessage = $"Searching external artists for: {_searchTerm}";
+
+        try
+        {
+            var lidarr = new LidarrHelper();
+            var raw = await lidarr.LookupArtistsRawAsync(_searchTerm);
+            _externalItems.Clear();
+
+            foreach (var r in raw)
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(r);
+                    var name = doc.RootElement.TryGetProperty("artistName", out var an) && an.ValueKind == JsonValueKind.String ? an.GetString() ?? r : r;
+                    var description = doc.RootElement.TryGetProperty("disambiguation", out var dis) && dis.ValueKind == JsonValueKind.String ? dis.GetString() ?? string.Empty : string.Empty;
+
+                    string foreignId = string.Empty;
+                    if (doc.RootElement.TryGetProperty("foreignArtistId", out var fid) && fid.ValueKind == JsonValueKind.String)
+                        foreignId = fid.GetString() ?? string.Empty;
+
+                    var images = new List<string>();
+                    if (doc.RootElement.TryGetProperty("images", out var imagesEl) && imagesEl.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var ie in imagesEl.EnumerateArray())
+                        {
+                            if (ie.ValueKind == JsonValueKind.Object && ie.TryGetProperty("url", out var iu) && iu.ValueKind == JsonValueKind.String)
+                                images.Add(iu.GetString()!);
+                        }
+                    }
+
+                    _externalItems.Add(new ManualMatchItem { SourceType = MatchSourceType.External, DisplayName = name ?? r, Description = description, ForeignId = foreignId, Images = images });
+                }
+                catch { /* skip malformed entry */ }
+            }
+
+            _showingExternal = true;
+            _contextText = $"External results for: {_searchTerm}";
+            if (_externalItems.Count == 0) _statusMessage = "No external results found.";
+        }
+        catch (Exception ex)
+        {
+            _statusMessage = $"External search failed: {ex.Message}";
+        }
+        finally
+        {
+            _isBusy = false;
+            if (_externalItems.Count > 0) _statusMessage = string.Empty;
+        }
+    }
+
+    private async Task SearchMusicBrainz()
+    {
+        if (_isBusy || string.IsNullOrWhiteSpace(_searchTerm)) return;
+        _isBusy = true;
+        _statusMessage = $"Searching MusicBrainz for: {_searchTerm}";
+
+        try
+        {
+            var musicBrainz = new MusicBrainzHelper();
+            var raw = await musicBrainz.SearchArtistsRawAsync(_searchTerm);
+            _externalItems.Clear();
+
+            foreach (var r in raw)
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(r);
+                    var name = doc.RootElement.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() ?? r : r;
+
+                    var id = string.Empty;
+                    if (doc.RootElement.TryGetProperty("id", out var mbid) && mbid.ValueKind == JsonValueKind.String)
+                        id = mbid.GetString() ?? string.Empty;
+
+                    var description = string.Empty;
+                    if (doc.RootElement.TryGetProperty("disambiguation", out var dis) && dis.ValueKind == JsonValueKind.String)
+                        description = dis.GetString() ?? string.Empty;
+                    if (doc.RootElement.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String)
+                    {
+                        var typeStr = type.GetString();
+                        if (!string.IsNullOrWhiteSpace(typeStr))
+                            description = string.IsNullOrWhiteSpace(description) ? typeStr : $"{typeStr} - {description}";
+                    }
+                    if (doc.RootElement.TryGetProperty("country", out var country) && country.ValueKind == JsonValueKind.String)
+                    {
+                        var countryStr = country.GetString();
+                        if (!string.IsNullOrWhiteSpace(countryStr))
+                            description = string.IsNullOrWhiteSpace(description) ? countryStr : $"{description} ({countryStr})";
+                    }
+
+                    _externalItems.Add(new ManualMatchItem { SourceType = MatchSourceType.MusicBrainz, DisplayName = name ?? r, ForeignId = id, Description = description });
+                }
+                catch { /* skip malformed entry */ }
+            }
+
+            _showingExternal = true;
+            _contextText = $"MusicBrainz results for: {_searchTerm}";
+            if (_externalItems.Count == 0) _statusMessage = "No MusicBrainz results found.";
+        }
+        catch (Exception ex)
+        {
+            _statusMessage = $"MusicBrainz search failed: {ex.Message}";
+        }
+        finally
+        {
+            _isBusy = false;
+            if (_externalItems.Count > 0) _statusMessage = string.Empty;
+        }
+    }
+
+    private void Reset()
+    {
+        _searchTerm = string.Empty;
+        _externalItems.Clear();
+        _showingExternal = false;
+        _contextText = string.IsNullOrWhiteSpace(ReleasePath) ? "Internal Artists" : $"{ReleasePath} (Internal Artists)";
+        _selected = null;
+        _previewImageUrl = null;
+    }
+
+    private async Task Confirm()
+    {
+        if (_selected is null || _isBusy) return;
+
+        if (_selected.SourceType == MatchSourceType.Internal && _selected.Artist != null)
+        {
+            await OnClosed.InvokeAsync(_selected.Artist);
+            return;
+        }
+
+        _isBusy = true;
+        _statusMessage = $"Importing {_selected.SourceType.ToString().ToLowerInvariant()} artist...";
+        try
+        {
+            var artistName = _selected.DisplayName;
+            var foreignId = !string.IsNullOrWhiteSpace(_selected.ForeignId) ? _selected.ForeignId : Guid.NewGuid().ToString();
+            var folder = string.IsNullOrWhiteSpace(artistName) ? "Unknown" : artistName;
+
+            var rootFolder = AppSettings.GetValue(SettingKey.DefaultArtistRootFolder);
+            var qualityProfileId = AppSettings.Current.GetTyped<int>(SettingKey.DefaultArtistQualityProfileId);
+            var metadataProfileId = AppSettings.Current.GetTyped<int>(SettingKey.DefaultArtistMetadataProfileId);
+
+            var lidarr = new LidarrHelper();
+            var created = await lidarr.CreateArtistAsync(artistName, foreignId, folder, rootFolder, qualityProfileId, metadataProfileId, monitored: true, searchForMissingAlbums: true);
+
+            await OnClosed.InvokeAsync(created ?? new LidarrArtist { ArtistName = artistName, Id = 0 });
+        }
+        catch (Exception ex)
+        {
+            _statusMessage = $"Failed to import artist: {ex.Message}";
+            _isBusy = false;
+        }
+    }
+
+    private async Task Cancel()
+    {
+        if (_isBusy) return;
+        await OnClosed.InvokeAsync(null);
+    }
+
+    private static string GetMusicBrainzId(ManualMatchItem item) => item.SourceType switch
+    {
+        MatchSourceType.Internal => item.Artist?.ForeignArtistId ?? string.Empty,
+        MatchSourceType.External or MatchSourceType.MusicBrainz => item.ForeignId,
+        _ => string.Empty
+    };
+}

@@ -1,0 +1,26 @@
+services:
+  lidarrcompanion:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lidarrcompanion
+    restart: unless-stopped
+    ports:
+      - "5299:8080"
+    environment:
+      - DataDirectory=/data
+    volumes:
+      # Settings JSON + rolling log files. This is the one mount every deployment needs -
+      # everything below it is specific to whatever paths this particular install's Settings
+      # page points at.
+      - ./docker-data:/data
+
+      # Bind-mounting the SAME paths already configured in Settings (ImportPathCompanion,
+      # LibraryPathCompanion, BackupRootFolder, the Import Destinations, SiftFolder,
+      # CopyImportedFilesPath) means none of those path settings need to change just because the
+      # app now runs in a container instead of via `dotnet run`. Adjust the host side (left of the
+      # colon) to match wherever these actually live on the machine running Docker - on the
+      # eventual TrueNAS target that's the TrueNAS dataset paths, not these dev-machine paths.
+      - /mnt/Music:/mnt/Music
+      - /mnt/lidarr-backup:/mnt/lidarr-backup
+      - /home/davepike/Nextcloud:/home/davepike/Nextcloud

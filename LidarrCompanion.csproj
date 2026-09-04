@@ -17,6 +17,15 @@
     <Company>LidarrCompanion</Company>
     <Product>LidarrCompanion</Product>
     <Copyright>Copyright © $([System.DateTime]::UtcNow.Year)</Copyright>
+
+    <!-- Sibling SDK-style projects (LidarrCompanion.Core/.Web/.Core.Tests) live under this same
+         directory; without this they'd get swept into this project's default file globs too. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);LidarrCompanion.Core/**;LidarrCompanion.Core.Tests/**;LidarrCompanion.Web/**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <!-- Allow compiling on non-Windows machines (e.g. for editing/CI checks); has no effect on Windows -->
+  <PropertyGroup Condition="'$(OS)' != 'Windows_NT'">
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
   </PropertyGroup>
 
   <!-- Release Build Output Path -->

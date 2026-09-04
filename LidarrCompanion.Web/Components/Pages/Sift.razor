@@ -1,0 +1,226 @@
+@page "/sift"
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+@inject SiftService SiftState
+@inject IPlaybackService Playback
+@inject IJSRuntime JS
+
+<PageTitle>Sift - LidarrCompanion</PageTitle>
+
+<div class="sift-page">
+    <div class="sift-card">
+        <div class="sift-cover">
+            @if (SiftState.CurrentTrack is { HasCoverArt: true } coverTrack)
+            {
+                <img src="@($"/audio/sift-cover/{coverTrack.Id}")" alt="" />
+            }
+            else
+            {
+                <div class="sift-cover-placeholder"></div>
+            }
+        </div>
+
+        <div class="sift-progress">
+            <input type="range" min="0" max="100" value="@ProgressPercent" disabled />
+            <span class="sift-duration">@FormatTime(DisplayPosition) / @FormatTime(DisplayDuration)</span>
+        </div>
+
+        @if (SiftState.CurrentTrack is { } track)
+        {
+            <div class="sift-artist">@track.Artist</div>
+            <div class="sift-title">@track.Title</div>
+            @if (!string.IsNullOrWhiteSpace(track.ContributingArtists))
+            {
+                <div class="sift-contributing">@track.ContributingArtists</div>
+            }
+            <div class="sift-filename">@track.FileName</div>
+        }
+        else
+        {
+            <div class="sift-filename">No track loaded</div>
+        }
+    </div>
+
+    <div class="sift-controls">
+        <div class="sift-keep-trash">
+            <button @onclick="Keep" title="Y">Keep (Y)</button>
+            <button @onclick="TogglePlay" title="Space" class="sift-play">@(IsCurrentSiftTrackPlaying ? "Stop (Space)" : "Play (Space)")</button>
+            <button @onclick="Trash" title="N">Trash (N)</button>
+        </div>
+
+        <div class="sift-seek-row">
+            <button @onclick="SeekBackward" title="-">◄ -5% (-)</button>
+            <button class="@(SiftState.DefaultStartPositionPercent == 15 ? "default-position" : "")" @onclick="() => SeekOrPlay(0.15)" @oncontextmenu="() => SetDefaultPosition(15)" @oncontextmenu:preventDefault="true">1 (15%)</button>
+            <button class="@(SiftState.DefaultStartPositionPercent == 30 ? "default-position" : "")" @onclick="() => SeekOrPlay(0.30)" @oncontextmenu="() => SetDefaultPosition(30)" @oncontextmenu:preventDefault="true">2 (30%)</button>
+            <button class="@(SiftState.DefaultStartPositionPercent == 45 ? "default-position" : "")" @onclick="() => SeekOrPlay(0.45)" @oncontextmenu="() => SetDefaultPosition(45)" @oncontextmenu:preventDefault="true">3 (45%)</button>
+            <button class="@(SiftState.DefaultStartPositionPercent == 60 ? "default-position" : "")" @onclick="() => SeekOrPlay(0.60)" @oncontextmenu="() => SetDefaultPosition(60)" @oncontextmenu:preventDefault="true">4 (60%)</button>
+            <button class="@(SiftState.DefaultStartPositionPercent == 75 ? "default-position" : "")" @onclick="() => SeekOrPlay(0.75)" @oncontextmenu="() => SetDefaultPosition(75)" @oncontextmenu:preventDefault="true">5 (75%)</button>
+            <button class="@(SiftState.DefaultStartPositionPercent == 90 ? "default-position" : "")" @onclick="() => SeekOrPlay(0.90)" @oncontextmenu="() => SetDefaultPosition(90)" @oncontextmenu:preventDefault="true">6 (90%)</button>
+            <button @onclick="SeekForward" title="+">► +5% (+)</button>
+        </div>
+
+        <div class="sift-volume">
+            <span>🔊 Volume:</span>
+            <input type="range" min="0" max="100" value="@((int)(Playback.Volume * 100))" @oninput="OnVolumeChanged" />
+            <span>@((int)(Playback.Volume * 100))%</span>
+        </div>
+    </div>
+
+    <div class="sift-next">
+        <h3>Next 10 Tracks:</h3>
+        <ul>
+            @foreach (var next in SiftState.NextTracks)
+            {
+                <li>@next.FileName</li>
+            }
+        </ul>
+    </div>
+</div>
+
+@code {
+    protected override void OnInitialized()
+    {
+        if (!SiftState.HasAttemptedLoad)
+        {
+            SiftState.LoadTracksFromFolder();
+        }
+
+        Playback.StateChanged += OnPlaybackChanged;
+    }
+
+    private void OnPlaybackChanged() => InvokeAsync(StateHasChanged);
+
+    private bool IsCurrentSiftTrackPlaying =>
+        Playback.IsPlaying &&
+        SiftState.CurrentTrack is { } track &&
+        Playback.Current?.StreamUrl == $"/audio/sift-stream/{track.Id}";
+
+    private TimeSpan DisplayPosition => IsCurrentSiftTrackPlaying ? Playback.Position : TimeSpan.Zero;
+
+    private TimeSpan DisplayDuration => IsCurrentSiftTrackPlaying
+        ? Playback.Duration
+        : (SiftState.CurrentTrack is { } t ? SiftState.GetDuration(t) : TimeSpan.Zero);
+
+    private double ProgressPercent => IsCurrentSiftTrackPlaying && Playback.Duration.TotalSeconds > 0
+        ? Math.Min(100, Math.Max(0, Playback.Position.TotalSeconds / Playback.Duration.TotalSeconds * 100))
+        : 0;
+
+    private static string FormatTime(TimeSpan time) => time.TotalHours >= 1
+        ? $"{(int)time.TotalHours}:{time.Minutes:D2}:{time.Seconds:D2}"
+        : $"{time.Minutes}:{time.Seconds:D2}";
+
+    private Task PlayCurrentTrack(double? forcedStartPercent = null)
+    {
+        if (SiftState.CurrentTrack is not { } track) return Task.CompletedTask;
+
+        var startPercent = forcedStartPercent ??
+            (SiftState.DefaultStartPositionPercent > 0 ? SiftState.DefaultStartPositionPercent / 100.0 : SiftState.LastSeekPercent);
+
+        var title = string.IsNullOrWhiteSpace(track.Title) ? track.FileName : track.Title;
+        var coverUrl = track.HasCoverArt ? $"/audio/sift-cover/{track.Id}" : null;
+
+        Playback.Play(new NowPlayingTrack($"/audio/sift-stream/{track.Id}", title, track.Artist, coverUrl, startPercent));
+        return Task.CompletedTask;
+    }
+
+    private async Task TogglePlay()
+    {
+        if (IsCurrentSiftTrackPlaying) Playback.Stop();
+        else await PlayCurrentTrack();
+    }
+
+    private async Task Keep() => await AdvanceAfterAction(() => SiftState.Keep());
+    private async Task Trash() => await AdvanceAfterAction(() => SiftState.Trash());
+
+    private async Task AdvanceAfterAction(Func<bool> action)
+    {
+        var wasPlaying = IsCurrentSiftTrackPlaying;
+        var hasNext = action();
+        Playback.Stop();
+        if (hasNext && wasPlaying) await PlayCurrentTrack();
+        StateHasChanged();
+    }
+
+    private async Task SeekOrPlay(double percent)
+    {
+        SiftState.LastSeekPercent = percent;
+        if (IsCurrentSiftTrackPlaying) Playback.SeekToPercent(percent);
+        else await PlayCurrentTrack(percent);
+    }
+
+    private void SetDefaultPosition(int percent)
+    {
+        SiftState.SetDefaultStartPosition(percent);
+        StateHasChanged();
+    }
+
+    private void SeekBackward()
+    {
+        if (IsCurrentSiftTrackPlaying)
+            Playback.AdvanceBy(TimeSpan.FromSeconds(-Playback.Position.TotalSeconds * 0.05));
+    }
+
+    private void SeekForward()
+    {
+        if (IsCurrentSiftTrackPlaying)
+            Playback.AdvanceBy(TimeSpan.FromSeconds(Playback.Position.TotalSeconds * 0.05));
+    }
+
+    private void OnVolumeChanged(ChangeEventArgs e)
+    {
+        if (!double.TryParse(e.Value?.ToString(), out var vol)) return;
+
+        Playback.SetVolume(vol / 100.0);
+        AppSettings.Current.Settings[SettingKey.SiftVolume.ToString()] = (int)vol;
+        AppSettings.Save();
+    }
+
+    private IJSObjectReference? _shortcutsModule;
+    private DotNetObjectReference<Sift>? _selfRef;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _selfRef = DotNetObjectReference.Create(this);
+            _shortcutsModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/keyboardShortcuts.js");
+            await _shortcutsModule.InvokeVoidAsync("registerSift", _selfRef);
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnSiftShortcut(string key)
+    {
+        switch (key)
+        {
+            case " ": await TogglePlay(); break;
+            case "y": await Keep(); break;
+            case "n": await Trash(); break;
+            case "1": await SeekOrPlay(0.15); break;
+            case "2": await SeekOrPlay(0.30); break;
+            case "3": await SeekOrPlay(0.45); break;
+            case "4": await SeekOrPlay(0.60); break;
+            case "5": await SeekOrPlay(0.75); break;
+            case "6": await SeekOrPlay(0.90); break;
+            case "+": case "=": SeekForward(); break;
+            case "-": case "_": SeekBackward(); break;
+        }
+        StateHasChanged();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        Playback.StateChanged -= OnPlaybackChanged;
+        _selfRef?.Dispose();
+
+        if (_shortcutsModule is not null)
+        {
+            try
+            {
+                await _shortcutsModule.InvokeVoidAsync("unregisterSift");
+                await _shortcutsModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException) { /* circuit already gone */ }
+        }
+    }
+}

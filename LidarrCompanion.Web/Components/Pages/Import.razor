@@ -1,0 +1,460 @@
+@page "/import"
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+@inject TriageService Triage
+@inject StatusService Status
+@inject IPlaybackService Playback
+@inject CoverArtGateService CoverArtGate
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+<PageTitle>Import - LidarrCompanion</PageTitle>
+
+@if (!string.IsNullOrWhiteSpace(_revealedFolderPath))
+{
+    <div class="folder-popup">
+        <button class="notice-dismiss" @onclick="DismissRevealedFolder">✕</button>
+        @if (!string.IsNullOrWhiteSpace(_revealedFilePath))
+        {
+            <div class="folder-popup-row">
+                <span class="folder-popup-label">File</span>
+                <span class="folder-popup-path">@_revealedFilePath</span>
+                <button @onclick="() => CopyPath(_revealedFilePath)">Copy</button>
+            </div>
+        }
+        <div class="folder-popup-row">
+            <span class="folder-popup-label">Folder</span>
+            <span class="folder-popup-path">@_revealedFolderPath</span>
+            <button @onclick="() => CopyPath(_revealedFolderPath)">Copy</button>
+        </div>
+        @if (_revealedFolderShareLink is not null)
+        {
+            <a href="@_revealedFolderShareLink">Open (share link)</a>
+        }
+    </div>
+}
+
+<div class="triage-page @(Triage.IsBusy ? "busy" : "")">
+    <section class="triage-queue">
+        <div class="triage-queue-header">
+            <h2>Lidarr Queue Records</h2>
+        </div>
+        <div class="triage-queue-body">
+            <div class="table-scroll">
+                <table class="triage-table">
+                    <thead><tr><th>Title</th><th>File Path</th><th>Download ID</th><th>Matched Artist</th></tr></thead>
+                    <tbody>
+                        @foreach (var record in Triage.QueueRecords)
+                        {
+                            <tr class="@(record == Triage.SelectedQueueRecord ? "row-selected" : "")"
+                                style="background-color:@ActionColorHelper.GetQueueMatchColor(record.Match);color:@ActionColorHelper.GetQueueMatchForeground(record.Match)"
+                                @onclick="() => SelectQueueRecord(record)">
+                                <td>@record.Title</td>
+                                <td>@record.OutputPath</td>
+                                <td>@record.DownloadId</td>
+                                <td>@record.MatchedArtist</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <div class="triage-queue-actions">
+                <button class="action-btn" @onclick="Refresh" title="Alt+1">Refresh</button>
+                <button class="action-btn" @onclick="OpenManualMatch" title="Alt+A">Match Artist</button>
+                <button class="action-btn" @onclick="AutoMatch" title="Alt+3">Auto Match</button>
+            </div>
+        </div>
+    </section>
+
+    <section class="triage-columns">
+        <div class="triage-col triage-files">
+            <div class="triage-col-header">
+                <h2>Unimported Release Files</h2>
+                <button class="icon-btn" @onclick="PlayTrack" @oncontextmenu="AdvanceTrack" @oncontextmenu:preventDefault="true" title="Play/Stop (Alt+P), right-click +30s">
+                    @(Playback.IsPlaying ? "⏹" : "▶")
+                </button>
+                <button class="icon-btn" @onclick="OpenReleaseFolder" title="Open Folder">📁</button>
+            </div>
+            <div class="table-scroll">
+                <table class="triage-table">
+                    <thead><tr><th></th><th>Name</th><th>Path</th></tr></thead>
+                    <tbody>
+                        @foreach (var file in Triage.ManualImportFiles)
+                        {
+                            <tr class="@(file == Triage.SelectedFile ? "row-selected" : "")"
+                                style="@FileRowStyle(file)">
+                                <td>
+                                    <input type="checkbox" checked="@Triage.CheckedFileIds.Contains(file.Id)" @onchange="e => ToggleFileChecked(file, (bool)(e.Value ?? false))" />
+                                </td>
+                                <td @onclick="() => SelectFile(file)">@file.Name</td>
+                                <td @onclick="() => SelectFile(file)">@file.Path</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="triage-col triage-tracks">
+            <h2>Artist Release Files</h2>
+            <div class="table-scroll">
+                <table class="triage-table">
+                    <thead><tr><th>Type</th><th>Release</th><th>Track</th><th>Exists?</th><th>Score</th></tr></thead>
+                    <tbody>
+                        @foreach (var track in Triage.ArtistReleaseTracks)
+                        {
+                            <tr class="@(track == Triage.SelectedTrack ? "row-selected" : "") @(track.IsAssigned ? "row-disabled" : "")"
+                                style="background-color:@TrackRowColor(track)"
+                                @onclick="() => SelectTrack(track)">
+                                <td>@track.AlbumType</td>
+                                <td>@track.Release</td>
+                                <td>@track.Track</td>
+                                <td><input type="checkbox" checked="@track.HasFile" disabled /></td>
+                                <td class="numeric">@track.Score.ToString("F1")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="triage-col triage-controls">
+            <div class="sort-buttons">
+                <span class="sort-filter-icon" title="Sort / filter">🔽</span>
+                <button class="sort-btn @(_sortMode == "by Release" ? "active" : "")" title="Sort by Release" @onclick='() => SetSort("by Release")'>💿</button>
+                <button class="sort-btn @(_sortMode == "by Track Num" ? "active" : "")" title="Sort by Track Num" @onclick='() => SetSort("by Track Num")'>🔢</button>
+                <button class="sort-btn @(_sortMode == "by Track Name" ? "active" : "")" title="Sort by Track Name" @onclick='() => SetSort("by Track Name")'>🔤</button>
+                <button class="sort-btn @(_sortMode == "by Best" ? "active" : "")" title="Sort by Best Match" @onclick='() => SetSort("by Best")'>⭐</button>
+            </div>
+
+            <button class="action-btn" @onclick="MarkMatch" title="Alt+M">Mark Match</button>
+            <button class="action-btn" @onclick="() => CreateProposal(ProposalActionType.Unlink)">Unlink File</button>
+            <button class="action-btn" @onclick="() => CreateProposal(ProposalActionType.Delete)">Delete File</button>
+
+            @foreach (var dest in Triage.Destinations)
+            {
+                <div class="destination-buttons">
+                    <button class="destination-move" title="@dest.DestinationPath" @onclick="() => MoveToDestination(dest)">Move: @dest.Name</button>
+                    <button class="destination-folder" title="@($"Open folder: {dest.DestinationPath}")" @onclick="() => OpenDestinationFolder(dest)">📁</button>
+                </div>
+            }
+        </div>
+    </section>
+
+    <section class="triage-proposed">
+        <h2>Actions to Take</h2>
+        <div class="triage-proposed-body">
+            <div class="table-scroll">
+                <table class="triage-table">
+                    <thead><tr><th>Type</th><th>FileName</th><th>OriginalRelease</th><th>MatchedArtist</th><th>MatchedTrack</th><th>MatchedRelease</th></tr></thead>
+                    <tbody>
+                        @foreach (var pa in Triage.ProposedActions)
+                        {
+                            <tr class="@(pa == Triage.SelectedProposedAction ? "row-selected" : "")"
+                                style="@(pa.IsImportFailed ? "background-color:#f44336;color:#fff" : $"background-color:{ActionColorHelper.GetActionBackground(pa.Action, pa.DestinationName)};color:{ActionColorHelper.GetActionForeground(pa.Action, pa.DestinationName)}")"
+                                @onclick="() => Triage.SelectedProposedAction = pa">
+                                <td>@pa.Action</td>
+                                <td>@pa.OriginalFileName</td>
+                                <td>@pa.OriginalRelease</td>
+                                <td>@pa.MatchedArtist</td>
+                                <td>@pa.MatchedTrack</td>
+                                <td>@pa.MatchedRelease</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <div class="triage-proposed-actions">
+                <button class="action-btn" @onclick="Unselect">Unselect</button>
+                <button class="action-btn" @onclick="ClearProposed">Clear</button>
+                <button class="action-btn btn-process" @onclick="ProcessImport">Process Actions</button>
+            </div>
+        </div>
+    </section>
+</div>
+
+@if (_showManualMatch)
+{
+    <ManualMatchDialog Candidates="Triage.Artists" ReleasePath="@_manualMatchSeed" OnClosed="OnManualMatchClosed" />
+}
+
+@code {
+    private bool _showManualMatch;
+    private string _manualMatchSeed = string.Empty;
+    private string _sortMode = "by Best";
+    private string? _revealedFilePath;
+    private string? _revealedFolderPath;
+    private string? _revealedFolderShareLink;
+
+    private IJSObjectReference? _shortcutsModule;
+    private DotNetObjectReference<Import>? _selfRef;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _selfRef = DotNetObjectReference.Create(this);
+            _shortcutsModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/keyboardShortcuts.js");
+            await _shortcutsModule.InvokeVoidAsync("register", _selfRef);
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnShortcut(string key)
+    {
+        switch (key)
+        {
+            case "1": await Refresh(); break;
+            case "3": await AutoMatch(); break;
+            case "a": OpenManualMatch(); break;
+            case "m": await MarkMatch(); break;
+            case "p": await PlayTrack(); break;
+        }
+    }
+
+    private async Task Refresh() { await Triage.RefreshAsync(); StateHasChanged(); }
+    private async Task AutoMatch() { await Triage.AutoMatchAsync(); StateHasChanged(); }
+
+    private async Task SelectQueueRecord(LidarrQueueRecord record)
+    {
+        await Triage.OnQueueRecordSelectedAsync(record);
+        StateHasChanged();
+    }
+
+    private void SelectFile(LidarrManualImportFile file)
+    {
+        Triage.SelectedFile = file;
+        Triage.ApplySort(_sortMode);
+    }
+
+    private void ToggleFileChecked(LidarrManualImportFile file, bool isChecked)
+    {
+        if (isChecked) Triage.CheckedFileIds.Add(file.Id);
+        else Triage.CheckedFileIds.Remove(file.Id);
+    }
+
+    private void SelectTrack(LidarrArtistReleaseTrack track) => Triage.SelectedTrack = track;
+
+    private void SetSort(string mode)
+    {
+        _sortMode = mode;
+        Triage.ApplySort(_sortMode);
+    }
+
+    private async Task MarkMatch()
+    {
+        var result = Triage.MarkMatch();
+        if (result == MarkMatchResult.NeedsOverwriteConfirmation)
+        {
+            var confirmed = await JS.InvokeAsync<bool>("confirm", "Selected track already has a file. Assigning will overwrite it. Continue?");
+            if (confirmed) Triage.MarkMatch(overwriteConfirmed: true);
+        }
+        StateHasChanged();
+    }
+
+    private void CreateProposal(ProposalActionType kind)
+    {
+        Triage.CreateProposal(kind);
+        StateHasChanged();
+    }
+
+    private void MoveToDestination(ImportDestination dest)
+    {
+        Triage.MoveToDestination(dest);
+        StateHasChanged();
+    }
+
+    private void Unselect()
+    {
+        if (Triage.SelectedProposedAction is { } pa)
+        {
+            Triage.Unselect(pa);
+        }
+        else
+        {
+            Status.ShowError("Select a proposed action to unselect.");
+        }
+        StateHasChanged();
+    }
+
+    private void ClearProposed()
+    {
+        Triage.ClearProposed();
+        StateHasChanged();
+    }
+
+    private async Task ProcessImport()
+    {
+        // Result is reported via the status bar (see TriageService.PostImportSummary), not here.
+        await Triage.ProcessImportAsync();
+
+        // If cover art is now blocking the import, go straight there instead of leaving the user
+        // to notice and click a status-bar link - the status bar still carries a link too, as a
+        // way back if they navigate off before finishing.
+        if (CoverArtGate.HasPending)
+        {
+            Nav.NavigateTo("/cover-art");
+            return;
+        }
+
+        StateHasChanged();
+    }
+
+    private string? GetDestinationName(LidarrManualImportFile file)
+    {
+        var pa = Triage.ProposedActions.FirstOrDefault(p => p.FileId == file.Id);
+        return pa?.DestinationName;
+    }
+
+    // file.ProposedActionType is nullable - null must stay transparent/inherit, not fall through
+    // to ProposalActionType's default enum value (Import = 0, which would wrongly paint every
+    // unassigned file green).
+    private string FileRowStyle(LidarrManualImportFile file)
+    {
+        if (!file.ProposedActionType.HasValue) return "background-color:transparent;color:inherit";
+
+        var destName = GetDestinationName(file);
+        var bg = ActionColorHelper.GetActionBackground(file.ProposedActionType.Value, destName);
+        var fg = ActionColorHelper.GetActionForeground(file.ProposedActionType.Value, destName);
+        return $"background-color:{bg};color:{fg}";
+    }
+
+    private static string TrackRowColor(LidarrArtistReleaseTrack track)
+    {
+        if (track.IsAssigned) return ActionColorHelper.GetThemedColor("trackassigned");
+        if (track.HasFile) return ActionColorHelper.GetThemedColor("trackhasfile");
+        if (track.ReleaseHasOtherAssigned) return ActionColorHelper.GetThemedColor("releasehasassigned");
+        return "transparent";
+    }
+
+    private async Task PlayTrack()
+    {
+        if (Playback.IsPlaying)
+        {
+            Playback.Stop();
+            return;
+        }
+
+        if (Triage.SelectedFile is not { } file)
+        {
+            Status.ShowError("Select a file from 'Unimported Release Files' first.");
+            StateHasChanged();
+            return;
+        }
+
+        Playback.Play(new NowPlayingTrack($"/audio/stream/{file.Id}", file.Name, Triage.SelectedQueueRecord?.MatchedArtist, null));
+        await Task.CompletedTask;
+    }
+
+    private void AdvanceTrack() => Playback.AdvanceBy(TimeSpan.FromSeconds(30));
+
+    private void OpenReleaseFolder()
+    {
+        string? rawPath = Triage.SelectedFile?.Path ?? Triage.SelectedQueueRecord?.OutputPath;
+        if (string.IsNullOrWhiteSpace(rawPath))
+        {
+            Status.ShowError("Select a file or release first.");
+            StateHasChanged();
+            return;
+        }
+
+        RevealFolder(rawPath);
+    }
+
+    private void OpenDestinationFolder(ImportDestination dest)
+    {
+        if (string.IsNullOrWhiteSpace(dest.DestinationPath))
+        {
+            Status.ShowError($"Destination folder '{dest.Name}' is not configured.");
+            StateHasChanged();
+            return;
+        }
+        RevealFolder(dest.DestinationPath, alreadyResolved: true);
+    }
+
+    private void RevealFolder(string rawPath, bool alreadyResolved = false)
+    {
+        var resolved = alreadyResolved ? rawPath : FileOperationsHelper.ResolveMappedPathAnyKnown(rawPath, true);
+        var isFile = File.Exists(resolved);
+        var folder = isFile ? (Path.GetDirectoryName(resolved) ?? resolved) : resolved;
+
+        _revealedFilePath = isFile ? resolved : null;
+        _revealedFolderPath = folder;
+        _revealedFolderShareLink = BuildShareLink(folder);
+        StateHasChanged();
+    }
+
+    private static string? BuildShareLink(string resolvedLocalPath)
+    {
+        var shareBase = AppSettings.GetValue(SettingKey.NetworkShareBase);
+        if (string.IsNullOrWhiteSpace(shareBase)) return null;
+
+        // The resolved path could have come from either local mapping - try both roots.
+        foreach (var key in new[] { SettingKey.ImportPathCompanion, SettingKey.DownloadPathCompanion })
+        {
+            var localRoot = AppSettings.GetValue(key);
+            if (string.IsNullOrWhiteSpace(localRoot)) continue;
+            if (!resolvedLocalPath.StartsWith(localRoot, StringComparison.OrdinalIgnoreCase)) continue;
+
+            var relative = resolvedLocalPath[localRoot.Length..].TrimStart('/', '\\').Replace('\\', '/');
+            return shareBase.TrimEnd('/') + "/" + relative;
+        }
+
+        return null;
+    }
+
+    private async Task CopyPath(string? path)
+    {
+        if (!string.IsNullOrWhiteSpace(path))
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", path);
+    }
+
+    private void DismissRevealedFolder()
+    {
+        _revealedFilePath = null;
+        _revealedFolderPath = null;
+        _revealedFolderShareLink = null;
+    }
+
+    private void OpenManualMatch()
+    {
+        if (Triage.SelectedQueueRecord is not { } record)
+        {
+            Status.ShowError("Select a release from the list first.");
+            StateHasChanged();
+            return;
+        }
+
+        var importPath = AppSettings.GetValue(SettingKey.ImportPathLidarr);
+        var isSingleFile = FileAndAudioService.IsSingleFileRelease(record.OutputPath, importPath);
+        _manualMatchSeed = isSingleFile
+            ? Path.GetFileNameWithoutExtension(record.OutputPath) ?? string.Empty
+            : FileAndAudioService.GetLowestFolderName(record.OutputPath) ?? string.Empty;
+
+        _showManualMatch = true;
+    }
+
+    private async Task OnManualMatchClosed(LidarrArtist? selected)
+    {
+        _showManualMatch = false;
+        if (selected is not null)
+        {
+            await Triage.ApplyManualMatchAsync(selected);
+        }
+        StateHasChanged();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _selfRef?.Dispose();
+        if (_shortcutsModule is not null)
+        {
+            try
+            {
+                await _shortcutsModule.InvokeVoidAsync("unregister");
+                await _shortcutsModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException) { /* circuit already gone */ }
+        }
+    }
+}

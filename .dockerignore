@@ -1,0 +1,26 @@
+# Build outputs - always rebuilt inside the image, never copied in from the host
+**/bin/
+**/obj/
+
+# Real settings/logs (Lidarr API key, admin password hash, SerpApi key) - must never end up
+# baked into an image layer. The container gets its own copy via the /data volume mount.
+LidarrCompanion.Web/data/
+
+# The old WPF desktop app and its test-adjacent clutter - irrelevant to the web app's build
+Forms/
+Helpers/
+Models/
+Services/
+Properties/
+LidarrCompanion.csproj
+LidarrCompanion.sln
+LidarrCompanion.Core.Tests/
+
+# Editor/VCS noise
+.git/
+.vs/
+.vscode/
+*.user
+
+# Anything already-published shouldn't leak into a fresh build context either
+**/publish/

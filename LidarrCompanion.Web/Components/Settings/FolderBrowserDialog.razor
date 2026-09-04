@@ -1,0 +1,91 @@
+@* A minimal server-side directory browser for "[Local]" path settings (see Settings.razor's
+   IsPathSetting) - browses the filesystem of THIS server/container, since that's what those
+   settings' values need to resolve on. Runs entirely server-side (Directory.GetDirectories etc.),
+   same as any other Blazor Server component code - no separate API endpoint needed. *@
+
+<div class="modal-backdrop">
+    <div class="modal-dialog folder-browser-dialog">
+        <h2>Browse Server Filesystem</h2>
+        <div class="folder-browser-path">@_currentPath</div>
+
+        <div class="folder-browser-list">
+            @if (_canGoUp)
+            {
+                <div class="folder-browser-item folder-browser-up" @onclick="GoUp">⬆ ..</div>
+            }
+            @foreach (var dir in _subDirs)
+            {
+                <div class="folder-browser-item" @onclick="() => Navigate(dir)">📁 @Path.GetFileName(dir)</div>
+            }
+            @if (_subDirs.Count == 0 && _error is null)
+            {
+                <div class="folder-browser-empty">No subfolders here.</div>
+            }
+        </div>
+
+        @if (_error is not null)
+        {
+            <p class="modal-status">@_error</p>
+        }
+
+        <div class="modal-actions">
+            <button @onclick="SelectCurrent">Select this folder</button>
+            <button @onclick="Cancel">Cancel</button>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public string? InitialPath { get; set; }
+    [Parameter] public EventCallback<string?> OnClosed { get; set; }
+
+    private string _currentPath = "/";
+    private List<string> _subDirs = new();
+    private string? _error;
+    private bool _canGoUp;
+
+    protected override void OnInitialized()
+    {
+        _currentPath = !string.IsNullOrWhiteSpace(InitialPath) && Directory.Exists(InitialPath)
+            ? InitialPath!
+            : (OperatingSystem.IsWindows() ? "C:\\" : "/");
+
+        LoadDirectories();
+    }
+
+    private void LoadDirectories()
+    {
+        _error = null;
+        _subDirs = new List<string>();
+
+        try
+        {
+            _subDirs = Directory.GetDirectories(_currentPath).OrderBy(d => d, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Can't list this folder: {ex.Message}";
+        }
+
+        _canGoUp = Directory.GetParent(_currentPath) is not null;
+    }
+
+    private void Navigate(string dir)
+    {
+        _currentPath = dir;
+        LoadDirectories();
+    }
+
+    private void GoUp()
+    {
+        var parent = Directory.GetParent(_currentPath)?.FullName;
+        if (parent is not null)
+        {
+            _currentPath = parent;
+            LoadDirectories();
+        }
+    }
+
+    private async Task SelectCurrent() => await OnClosed.InvokeAsync(_currentPath);
+    private async Task Cancel() => await OnClosed.InvokeAsync(null);
+}

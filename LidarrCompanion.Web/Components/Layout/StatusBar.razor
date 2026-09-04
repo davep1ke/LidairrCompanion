@@ -1,0 +1,33 @@
+@implements IDisposable
+@inject StatusService Status
+@inject CoverArtGateService CoverArtGate
+
+<div class="status-bar status-bar-@Status.Kind.ToString().ToLowerInvariant()">
+    <span class="status-bar-message">@Status.Message</span>
+    @if (Status.Kind == StatusKind.Error)
+    {
+        <button class="status-bar-dismiss" @onclick="Dismiss">✕</button>
+    }
+    @if (CoverArtGate.HasPending)
+    {
+        <a class="status-bar-cover-art-link" href="/cover-art">@CoverArtGate.MissingCount file(s) need cover art - resolve now</a>
+    }
+</div>
+
+@code {
+    protected override void OnInitialized()
+    {
+        Status.Changed += OnChanged;
+        CoverArtGate.Changed += OnChanged;
+    }
+
+    private void OnChanged() => InvokeAsync(StateHasChanged);
+
+    private void Dismiss() => Status.Dismiss();
+
+    public void Dispose()
+    {
+        Status.Changed -= OnChanged;
+        CoverArtGate.Changed -= OnChanged;
+    }
+}

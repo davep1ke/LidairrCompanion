@@ -1,0 +1,56 @@
+@page "/logs"
+@rendermode InteractiveServer
+@implements IDisposable
+@inject ILogService LogService
+
+<PageTitle>Logs - LidarrCompanion</PageTitle>
+
+<h1>Logs</h1>
+<p>@_entries.Count entries (newest first, max 1000 kept live; older entries are still in the log files on disk).</p>
+
+<table class="log-table">
+    <thead>
+        <tr>
+            <th>Time</th>
+            <th>Severity</th>
+            <th>Source</th>
+            <th>Message</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var entry in _entries)
+        {
+            <tr class="log-row log-@entry.Severity.ToString().ToLowerInvariant()">
+                <td>@entry.FormattedTimestamp</td>
+                <td>@entry.SeverityDisplay</td>
+                <td>@entry.Method</td>
+                <td>@entry.Description</td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+@code {
+    private List<LogEntry> _entries = new();
+
+    protected override void OnInitialized()
+    {
+        _entries = LogService.Entries.ToList();
+        LogService.EntryAdded += OnEntryAdded;
+    }
+
+    private void OnEntryAdded(LogEntry entry)
+    {
+        InvokeAsync(() =>
+        {
+            _entries.Insert(0, entry);
+            if (_entries.Count > 1000) _entries.RemoveAt(_entries.Count - 1);
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        LogService.EntryAdded -= OnEntryAdded;
+    }
+}

@@ -1,0 +1,335 @@
+@page "/cover-art"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@implements IAsyncDisposable
+@using LidarrCompanion.Helpers
+@using LidarrCompanion.Models
+@inject CoverArtGateService Gate
+@inject TriageService Triage
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+<PageTitle>Cover Art - LidarrCompanion</PageTitle>
+
+@if (!Gate.HasPending)
+{
+    <div class="cover-art-empty">
+        <p>No files are currently waiting for cover art.</p>
+    </div>
+}
+else
+{
+    <div class="cover-art-page">
+        <div class="cover-art-list">
+            <h2>Files (@Gate.PendingItems.Count(i => i.HasCoverArt)/@Gate.PendingItems.Count have art)</h2>
+            <table class="triage-table">
+                <thead><tr><th></th><th>File</th><th>Destination</th></tr></thead>
+                <tbody>
+                    @foreach (var item in Gate.PendingItems)
+                    {
+                        <tr class="@(item == _current ? "row-selected" : "")" @onclick="() => SelectItem(item)">
+                            <td>@(item.HasCoverArt ? "✓" : "")</td>
+                            <td>@item.FileName</td>
+                            <td>@item.DestinationName</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <div class="cover-art-detail">
+            @if (_current is not null)
+            {
+                <div class="cover-art-info">
+                    <div><strong>Artist:</strong> @(_current.Artist ?? "-")</div>
+                    <div><strong>Album:</strong> @(_current.Album ?? "-")</div>
+                    <div><strong>File:</strong> @_current.FileName</div>
+                </div>
+
+                <div class="cover-art-preview">
+                    @if (StagedImageDataUri is not null)
+                    {
+                        <img src="@StagedImageDataUri" alt="cover art preview" />
+                    }
+                    else if (ExistingImageDataUri is not null)
+                    {
+                        <img src="@ExistingImageDataUri" alt="existing cover art" />
+                    }
+                    else
+                    {
+                        <div class="cover-art-drop-hint">No cover art yet. Paste an image (Ctrl+V) or pick a result below.</div>
+                    }
+                </div>
+
+                <div class="cover-art-search">
+                    <input @bind="_searchTerm" @bind:event="oninput" placeholder="Search..." />
+                    <button @onclick="SearchAutomatic" disabled="@_isBusy">Search MusicBrainz</button>
+                    <button @onclick="SearchManual" disabled="@_isBusy">Search Web Images</button>
+                </div>
+
+                @if (_manualResults.Count > 0)
+                {
+                    <div class="cover-art-results">
+                        @foreach (var r in _manualResults)
+                        {
+                            <img src="@r.ThumbnailUrl" title="@r.Title" alt="@r.Title" class="cover-art-result-thumb" @onclick="() => SelectManualResult(r)" />
+                        }
+                    </div>
+                }
+
+                <p class="cover-art-status">@_statusMessage</p>
+
+                <div class="cover-art-actions">
+                    <button @onclick="SaveAndNext" disabled="@(_stagedImage is null || _isBusy)">@(_isLastMissing ? "Save & Finish" : "Save & Next")</button>
+                    <button @onclick="SkipToNext" disabled="@_isBusy">Skip</button>
+                    <button @onclick="Complete" disabled="@_isBusy">Complete</button>
+                    <button @onclick="AbortImport" disabled="@_isBusy" class="cover-art-abort">Abort Import</button>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    private CoverArtQueueItem? _current;
+    private string _searchTerm = string.Empty;
+    private string _statusMessage = string.Empty;
+    private bool _isBusy;
+    private byte[]? _stagedImage;
+    private string? _stagedMimeType;
+    private List<SerpApiImageResult> _manualResults = new();
+
+    private IJSObjectReference? _pasteModule;
+    private DotNetObjectReference<CoverArt>? _selfRef;
+
+    private bool _isLastMissing => Gate.PendingItems.Count(i => !i.HasCoverArt) <= 1;
+
+    private string? ExistingImageDataUri => _current?.CoverArtPreview is { } bytes
+        ? $"data:{_current.CoverArtMimeType ?? "image/jpeg"};base64,{Convert.ToBase64String(bytes)}"
+        : null;
+
+    private string? StagedImageDataUri => _stagedImage is { } bytes
+        ? $"data:{_stagedMimeType ?? "image/jpeg"};base64,{Convert.ToBase64String(bytes)}"
+        : null;
+
+    protected override void OnInitialized()
+    {
+        Gate.Changed += OnGateChanged;
+        if (Gate.HasPending)
+            SelectFirstMissingOrFirst();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _selfRef = DotNetObjectReference.Create(this);
+            _pasteModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/coverArtPaste.js");
+            await _pasteModule.InvokeVoidAsync("registerPaste", _selfRef);
+        }
+    }
+
+    private void OnGateChanged() => InvokeAsync(StateHasChanged);
+
+    private void SelectFirstMissingOrFirst()
+    {
+        _current = Gate.PendingItems.FirstOrDefault(i => !i.HasCoverArt) ?? Gate.PendingItems.FirstOrDefault();
+        if (_current is not null)
+            _ = LoadItemAsync(_current);
+    }
+
+    private async Task SelectItem(CoverArtQueueItem item)
+    {
+        _current = item;
+        await LoadItemAsync(item);
+    }
+
+    private async Task LoadItemAsync(CoverArtQueueItem item)
+    {
+        _stagedImage = null;
+        _stagedMimeType = null;
+        _manualResults.Clear();
+        _statusMessage = string.Empty;
+        _searchTerm = BuildSearchQuery(item);
+        StateHasChanged();
+
+        if (!item.HasCoverArt)
+            await SearchAutomatic();
+    }
+
+    private static string BuildSearchQuery(CoverArtQueueItem item)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(item.Artist)) parts.Add(item.Artist);
+        if (!string.IsNullOrWhiteSpace(item.Album)) parts.Add(item.Album!);
+        else if (!string.IsNullOrWhiteSpace(item.ReleaseName)) parts.Add(item.ReleaseName);
+        if (parts.Count == 0) parts.Add(Path.GetFileNameWithoutExtension(item.FileName));
+        return string.Join(" ", parts);
+    }
+
+    // Tier 1: free automatic lookup (MusicBrainz release-group search + Cover Art Archive).
+    private async Task SearchAutomatic()
+    {
+        if (_current is null || _isBusy) return;
+        _isBusy = true;
+        _statusMessage = "Searching MusicBrainz...";
+        StateHasChanged();
+
+        try
+        {
+            var mb = new MusicBrainzHelper();
+            var art = await mb.TryGetCoverArtAsync(_current.Artist, _current.Album ?? _current.ReleaseName);
+            if (art is not null)
+            {
+                _stagedImage = art;
+                _stagedMimeType = "image/jpeg";
+                _statusMessage = "Found automatically via MusicBrainz.";
+            }
+            else
+            {
+                _statusMessage = "No automatic match found - try Search Web Images, or paste an image.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _statusMessage = $"Automatic search failed: {ex.Message}";
+        }
+        finally
+        {
+            _isBusy = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    // Tier 2: manual-only SerpApi fallback, for files with no automatic match.
+    private async Task SearchManual()
+    {
+        if (_isBusy || string.IsNullOrWhiteSpace(_searchTerm)) return;
+        _isBusy = true;
+        _statusMessage = $"Searching web images for: {_searchTerm}";
+        _manualResults.Clear();
+        StateHasChanged();
+
+        try
+        {
+            var apiKey = AppSettings.GetValue(SettingKey.SerpApiKey);
+            if (string.IsNullOrWhiteSpace(apiKey))
+            {
+                _statusMessage = "SerpApi key is not configured (Settings > CoverArt).";
+                return;
+            }
+
+            var serp = new SerpApiHelper();
+            _manualResults = await serp.SearchImagesAsync(apiKey, _searchTerm);
+            _statusMessage = _manualResults.Count == 0 ? "No web image results found." : string.Empty;
+        }
+        catch (Exception ex)
+        {
+            _statusMessage = $"Web image search failed: {ex.Message}";
+        }
+        finally
+        {
+            _isBusy = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task SelectManualResult(SerpApiImageResult result)
+    {
+        if (_isBusy) return;
+        _isBusy = true;
+        _statusMessage = "Downloading selected image...";
+        StateHasChanged();
+
+        try
+        {
+            var serp = new SerpApiHelper();
+            _stagedImage = await serp.DownloadImageAsync(result.FullUrl);
+            _stagedMimeType = "image/jpeg";
+            _statusMessage = "Image loaded - click Save & Next to embed it.";
+        }
+        catch (Exception ex)
+        {
+            _statusMessage = $"Failed to download image: {ex.Message}";
+        }
+        finally
+        {
+            _isBusy = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    [JSInvokable]
+    public void OnImagePasted(string base64, string mimeType)
+    {
+        try
+        {
+            _stagedImage = Convert.FromBase64String(base64);
+            _stagedMimeType = mimeType;
+            _statusMessage = "Image pasted from clipboard.";
+        }
+        catch (Exception ex)
+        {
+            _statusMessage = $"Failed to paste image: {ex.Message}";
+        }
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void SaveAndNext()
+    {
+        if (_current is null || _stagedImage is null) return;
+
+        try
+        {
+            Gate.SaveCoverArt(_current, _stagedImage, _stagedMimeType ?? "image/jpeg");
+            SelectFirstMissingOrFirst();
+        }
+        catch (Exception ex)
+        {
+            _statusMessage = $"Failed to save cover art: {ex.Message}";
+        }
+    }
+
+    private void SkipToNext()
+    {
+        if (_current is null) return;
+        var currentIndex = Gate.PendingItems.IndexOf(_current);
+        var next = Gate.PendingItems.Skip(currentIndex + 1).FirstOrDefault()
+            ?? Gate.PendingItems.FirstOrDefault(i => i != _current);
+        if (next is not null)
+            _ = SelectItem(next);
+    }
+
+    private async Task Complete()
+    {
+        if (_isBusy) return;
+        _isBusy = true;
+        StateHasChanged();
+
+        // Result is reported via the status bar (see TriageService.PostImportSummary), not here.
+        await Triage.ResumeImportAfterCoverArtAsync();
+        Nav.NavigateTo("/import");
+    }
+
+    private async Task AbortImport()
+    {
+        if (_isBusy) return;
+        var confirmed = await JS.InvokeAsync<bool>("confirm", "Are you sure you want to abort the import process? Files already moved will not be reverted.");
+        if (!confirmed) return;
+
+        Triage.AbortImportAfterCoverArt();
+        Nav.NavigateTo("/import");
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        Gate.Changed -= OnGateChanged;
+
+        if (_pasteModule is not null)
+        {
+            try { await _pasteModule.InvokeVoidAsync("unregisterPaste"); } catch { /* circuit may already be gone */ }
+            try { await _pasteModule.DisposeAsync(); } catch { /* circuit may already be gone */ }
+        }
+
+        _selfRef?.Dispose();
+    }
+}

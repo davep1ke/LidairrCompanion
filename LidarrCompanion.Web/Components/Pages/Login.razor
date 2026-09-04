@@ -1,0 +1,124 @@
+@page "/login"
+@layout LidarrCompanion.Web.Components.Layout.EmptyLayout
+@using System.ComponentModel.DataAnnotations
+@using System.Security.Claims
+@using LidarrCompanion.Models
+@using LidarrCompanion.Web.Auth
+@using Microsoft.AspNetCore.Authentication
+@using Microsoft.AspNetCore.Authentication.Cookies
+@using Microsoft.AspNetCore.Authorization
+@attribute [AllowAnonymous]
+
+<PageTitle>Sign in - LidarrCompanion</PageTitle>
+
+<div class="login-page">
+    <h1>LidarrCompanion</h1>
+
+    @if (!isPasswordSet)
+    {
+        <p>No admin password is set yet. Choose one to protect this app - it guards your Lidarr API key and other settings.</p>
+
+        <EditForm Model="SetPassword" FormName="set-password" OnValidSubmit="HandleSetPassword" method="post">
+            <DataAnnotationsValidator />
+            <ValidationSummary />
+
+            <div class="form-field">
+                <label for="new-password">New password</label>
+                <InputText id="new-password" type="password" @bind-Value="SetPassword!.Password" />
+            </div>
+            <div class="form-field">
+                <label for="confirm-password">Confirm password</label>
+                <InputText id="confirm-password" type="password" @bind-Value="SetPassword!.ConfirmPassword" />
+            </div>
+
+            <button type="submit">Set password and sign in</button>
+        </EditForm>
+    }
+    else
+    {
+        @if (loginFailed)
+        {
+            <p class="login-error">Incorrect password.</p>
+        }
+
+        <EditForm Model="LoginForm" FormName="login" OnValidSubmit="HandleLogin" method="post">
+            <div class="form-field">
+                <label for="password">Password</label>
+                <InputText id="password" type="password" @bind-Value="LoginForm!.Password" />
+            </div>
+
+            <button type="submit">Sign in</button>
+        </EditForm>
+    }
+</div>
+
+@code {
+    [CascadingParameter] private HttpContext HttpContext { get; set; } = default!;
+    [Inject] private NavigationManager NavigationManager { get; set; } = default!;
+
+    // The property name here IS the form field name prefix the framework binds from (the markup
+    // below posts fields named "LoginForm.Password" etc.), so it can't be renamed independently
+    // of the @bind-Value expressions. Left nullable rather than given a `= new()` initializer
+    // (BL0008: the framework can overwrite an initializer with null on a mismatched post) -
+    // OnInitialized below fills in a default on every render where the form didn't supply one,
+    // which covers the initial GET and keeps a submitted value intact on POST.
+    [SupplyParameterFromForm(FormName = "login")]
+    private LoginModel? LoginForm { get; set; }
+
+    [SupplyParameterFromForm(FormName = "set-password")]
+    private SetPasswordModel? SetPassword { get; set; }
+
+    private bool isPasswordSet;
+    private bool loginFailed;
+
+    protected override void OnInitialized()
+    {
+        LoginForm ??= new();
+        SetPassword ??= new();
+
+        var hash = AppSettings.GetValue(SettingKey.AdminPasswordHash);
+        isPasswordSet = !string.IsNullOrWhiteSpace(hash);
+    }
+
+    private async Task HandleSetPassword()
+    {
+        AppSettings.Current.Settings[SettingKey.AdminPasswordHash.ToString()] = PasswordHasher.Hash(SetPassword!.Password);
+        AppSettings.Save();
+        await SignInAndRedirect();
+    }
+
+    private async Task HandleLogin()
+    {
+        var hash = AppSettings.GetValue(SettingKey.AdminPasswordHash);
+        if (PasswordHasher.Verify(LoginForm!.Password, hash))
+        {
+            await SignInAndRedirect();
+        }
+        else
+        {
+            loginFailed = true;
+        }
+    }
+
+    private async Task SignInAndRedirect()
+    {
+        var identity = new ClaimsIdentity(new[] { new Claim(ClaimTypes.Name, "admin") }, CookieAuthenticationDefaults.AuthenticationScheme);
+        await HttpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(identity));
+        NavigationManager.NavigateTo("/", forceLoad: true);
+    }
+
+    public class LoginModel
+    {
+        [Required]
+        public string Password { get; set; } = string.Empty;
+    }
+
+    public class SetPasswordModel
+    {
+        [Required, MinLength(4, ErrorMessage = "Password must be at least 4 characters.")]
+        public string Password { get; set; } = string.Empty;
+
+        [Required, Compare(nameof(Password), ErrorMessage = "Passwords do not match.")]
+        public string ConfirmPassword { get; set; } = string.Empty;
+    }
+}

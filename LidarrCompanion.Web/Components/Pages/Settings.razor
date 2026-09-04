@@ -1,0 +1,243 @@
+@page "/settings"
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+@using System.Collections.ObjectModel
+@using LidarrCompanion.Web.Components.Settings
+@inject IJSRuntime JS
+@inject ThemeService Theme
+
+<PageTitle>Settings - LidarrCompanion</PageTitle>
+
+<div class="settings-page">
+    <div class="settings-main">
+        <h1>Settings</h1>
+
+        <table class="settings-table">
+            <thead>
+                <tr>
+                    <th>Category</th>
+                    <th>Property</th>
+                    <th>Value</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var item in _settingsCollection)
+                {
+                    <tr class="@(IsHighlighted(item) ? "highlighted" : "")">
+                        <td>@item.Category</td>
+                        <td>@item.Name</td>
+                        <td>
+                            @if (item.IsColorPair)
+                            {
+                                <div class="color-pair-edit">
+                                    <input type="color" class="color-picker" value="@item.LightModeValue" title="Light mode"
+                                           @onchange="e => OnColorPairChanged(item, isDark: false, e.Value?.ToString() ?? string.Empty)" />
+                                    <input type="color" class="color-picker" value="@item.DarkModeValue" title="Dark mode"
+                                           @onchange="e => OnColorPairChanged(item, isDark: true, e.Value?.ToString() ?? string.Empty)" />
+                                </div>
+                            }
+                            else if (IsBoolSetting(item))
+                            {
+                                <input value="@item.Value" class="settings-value-input"
+                                       @ondblclick="() => ToggleBoolSetting(item)"
+                                       @onchange="e => OnSettingValueChanged(item, e.Value?.ToString() ?? string.Empty)" />
+                            }
+                            else if (IsPathSetting(item))
+                            {
+                                <div class="path-setting-edit">
+                                    <input value="@item.Value" class="settings-value-input"
+                                           @onchange="e => OnSettingValueChanged(item, e.Value?.ToString() ?? string.Empty)" />
+                                    <button type="button" class="browse-btn" title="Browse this server's filesystem" @onclick="() => OpenFolderBrowser(item)">📁</button>
+                                </div>
+                            }
+                            else
+                            {
+                                <input value="@item.Value" class="settings-value-input"
+                                       @onchange="e => OnSettingValueChanged(item, e.Value?.ToString() ?? string.Empty)" />
+                            }
+                        </td>
+                        <td class="settings-description">@item.Description</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+
+        <h2>Import Destinations</h2>
+        <table class="destinations-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Destination Path</th>
+                    <th>Backup</th>
+                    <th>Copy</th>
+                    <th>Require Artwork</th>
+                    <th>Color</th>
+                    <th>Dark</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var dest in _destinations)
+                {
+                    <tr>
+                        <td><input value="@dest.Name" @onchange="e => OnDestinationChanged(dest, d => d.Name = e.Value?.ToString() ?? string.Empty)" /></td>
+                        <td>
+                            <div class="path-setting-edit">
+                                <input value="@dest.DestinationPath" class="wide" @onchange="e => OnDestinationChanged(dest, d => d.DestinationPath = e.Value?.ToString() ?? string.Empty)" />
+                                <button type="button" class="browse-btn" title="Browse this server's filesystem" @onclick="() => OpenFolderBrowserForDestination(dest)">📁</button>
+                            </div>
+                        </td>
+                        <td class="center"><input type="checkbox" checked="@dest.BackupFiles" @onchange="e => OnDestinationChanged(dest, d => d.BackupFiles = (bool)(e.Value ?? false))" /></td>
+                        <td class="center"><input type="checkbox" checked="@dest.CopyFiles" @onchange="e => OnDestinationChanged(dest, d => d.CopyFiles = (bool)(e.Value ?? false))" /></td>
+                        <td class="center"><input type="checkbox" checked="@dest.RequireArtwork" @onchange="e => OnDestinationChanged(dest, d => d.RequireArtwork = (bool)(e.Value ?? false))" /></td>
+                        <td><input type="color" class="color-picker" value="@dest.Color" @onchange="e => OnDestinationChanged(dest, d => d.Color = e.Value?.ToString() ?? string.Empty)" /></td>
+                        <td><input type="color" class="color-picker" value="@dest.ColorDark" @onchange="e => OnDestinationChanged(dest, d => d.ColorDark = e.Value?.ToString() ?? string.Empty)" /></td>
+                        <td><button class="btn-remove" @onclick="() => RemoveDestination(dest)">Remove</button></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        <button @onclick="AddDestination">Add destination</button>
+    </div>
+
+    <div class="settings-diagram">
+        <PipelineDiagram Destinations="_destinations" HighlightedKeysChanged="OnHighlightedKeysChanged" />
+    </div>
+</div>
+
+@if (_browsingItem is not null || _browsingDestination is not null)
+{
+    <FolderBrowserDialog InitialPath="@(_browsingItem?.Value ?? _browsingDestination?.DestinationPath)" OnClosed="OnFolderBrowserClosed" />
+}
+
+@code {
+    private ObservableCollection<SettingItem> _settingsCollection = new();
+    private ObservableCollection<ImportDestination> _destinations = new();
+    private HashSet<string>? _highlightedKeys;
+    private IJSObjectReference? _themeModule;
+    private SettingItem? _browsingItem;
+    private ImportDestination? _browsingDestination;
+
+    protected override void OnInitialized()
+    {
+        _settingsCollection = AppSettings.Current.ToCollection();
+        _destinations = new ObservableCollection<ImportDestination>(AppSettings.Current.ImportDestinations);
+    }
+
+    private bool IsHighlighted(SettingItem item) =>
+        _highlightedKeys is not null &&
+        (_highlightedKeys.Contains(item.Name) || (item.PairedSettingName is not null && _highlightedKeys.Contains(item.PairedSettingName)));
+
+    private void OnHighlightedKeysChanged(HashSet<string>? keys)
+    {
+        _highlightedKeys = keys;
+        StateHasChanged();
+    }
+
+    // "[Companion]" in the description marks settings whose value is a path on THIS server's own
+    // filesystem (see the SettingKey descriptions in AppSettings.cs) - the only ones a folder
+    // browser running on this server can meaningfully browse. "[Lidarr]" settings describe what
+    // Lidarr itself sees, possibly on a different machine, so they don't get a browse button.
+    private static bool IsPathSetting(SettingItem item) =>
+        item.Description.Contains("[Companion]", StringComparison.Ordinal);
+
+    private static bool IsBoolSetting(SettingItem item) =>
+        AppSettings.GetTypeForKey(item.Name) == typeof(bool);
+
+    private async Task ToggleBoolSetting(SettingItem item)
+    {
+        var current = string.Equals(item.Value, "true", StringComparison.OrdinalIgnoreCase) || item.Value == "1";
+        await OnSettingValueChanged(item, (!current).ToString());
+    }
+
+    private void OpenFolderBrowser(SettingItem item)
+    {
+        _browsingItem = item;
+        _browsingDestination = null;
+    }
+
+    private void OpenFolderBrowserForDestination(ImportDestination dest)
+    {
+        _browsingDestination = dest;
+        _browsingItem = null;
+    }
+
+    private async Task OnFolderBrowserClosed(string? path)
+    {
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            if (_browsingItem is not null)
+                await OnSettingValueChanged(_browsingItem, path);
+            else if (_browsingDestination is not null)
+                OnDestinationChanged(_browsingDestination, d => d.DestinationPath = path);
+        }
+
+        _browsingItem = null;
+        _browsingDestination = null;
+        StateHasChanged();
+    }
+
+    private async Task OnSettingValueChanged(SettingItem item, string newValue)
+    {
+        item.Value = newValue;
+        await CommitSettingsAsync();
+    }
+
+    private async Task OnColorPairChanged(SettingItem item, bool isDark, string newValue)
+    {
+        if (isDark) item.DarkModeValue = newValue; else item.LightModeValue = newValue;
+        await CommitSettingsAsync();
+    }
+
+    private async Task CommitSettingsAsync()
+    {
+        AppSettings.Current.UpdateFromCollection(_settingsCollection);
+        AppSettings.Save();
+
+        // Re-sync unconditionally rather than checking whether DarkMode specifically was the
+        // field that changed - cheap, and keeps this page's <html data-theme> correct immediately
+        // without a full reload (App.razor handles the *initial* render on other page loads).
+        Theme.SyncFromSettings();
+        _themeModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/theme.js");
+        await _themeModule.InvokeVoidAsync("apply", Theme.IsDarkMode);
+
+        StateHasChanged();
+    }
+
+    private void OnDestinationChanged(ImportDestination dest, Action<ImportDestination> apply)
+    {
+        apply(dest);
+        CommitDestinations();
+    }
+
+    private void CommitDestinations()
+    {
+        AppSettings.Current.ImportDestinations = _destinations.ToList();
+        AppSettings.Save();
+        StateHasChanged();
+    }
+
+    private void AddDestination()
+    {
+        _destinations.Add(new ImportDestination { Name = $"Destination {_destinations.Count + 1}" });
+        CommitDestinations();
+    }
+
+    private async Task RemoveDestination(ImportDestination dest)
+    {
+        var confirmed = await JS.InvokeAsync<bool>("confirm", $"Remove destination '{dest.Name}'?");
+        if (!confirmed) return;
+
+        _destinations.Remove(dest);
+        CommitDestinations();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_themeModule is not null)
+        {
+            try { await _themeModule.DisposeAsync(); } catch { /* circuit may already be gone */ }
+        }
+    }
+}

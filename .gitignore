@@ -361,3 +361,16 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Local app settings (contains Lidarr API key etc.) - not for source control.
+# Scoped to the WPF app's own root appsettings.json only - LidarrCompanion.Web/appsettings.json
+# is legitimate committed ASP.NET Core config (no secrets); its actual runtime data lives under
+# LidarrCompanion.Web/data/ instead, which is ignored separately below.
+/appsettings.json
+
+# Web app's runtime data directory (settings JSON with secrets, logs) - never for source control
+LidarrCompanion.Web/data/
+
+# Docker Compose's mounted /data volume (same settings JSON with secrets, logs) - see
+# docker-compose.yml. Same reasoning as LidarrCompanion.Web/data/ above.
+/docker-data/

@@ -1,0 +1,254 @@
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+<div class="pipeline-diagram" @ref="_containerRef">
+    <svg class="pipeline-lines">
+        @foreach (var line in _lines)
+        {
+            <line data-src="@line.SourceKey" data-dst="@line.TargetKey" data-head="@HeadId(line)"
+                  stroke="@(line == _hoveredLine ? "#000" : line.ColorHex)"
+                  stroke-width="@(line == _hoveredLine ? 5 : 3)"
+                  stroke-linecap="round"
+                  @onmouseenter="() => OnLineEnter(line)" @onmouseleave="OnLeave" />
+        }
+        @foreach (var line in _lines)
+        {
+            <polygon id="@HeadId(line)" fill="@(line == _hoveredLine ? "#000" : line.ColorHex)" />
+        }
+    </svg>
+
+    <div class="pipeline-boxes">
+        @foreach (var box in _boxes)
+        {
+            <div class="pipeline-box @(box == _hoveredBox ? "hovered" : "")"
+                 style="grid-row:@box.Row;grid-column:@box.Column @(box.ColumnSpan > 1 ? $"/ span {box.ColumnSpan}" : "");background-color:@box.ColorHex"
+                 data-box-key="@box.Key"
+                 @onmouseenter="() => OnBoxEnter(box)" @onmouseleave="OnLeave">
+                <span class="pipeline-box-label">@box.Label</span>
+                <span class="pipeline-box-icon">@box.Icon</span>
+            </div>
+        }
+
+        @if (_destinationBoxes.Count > 0)
+        {
+            <div class="pipeline-destinations" style="grid-row:4;grid-column:2 / span 2">
+                @foreach (var box in _destinationBoxes)
+                {
+                    <div class="pipeline-box @(box == _hoveredBox ? "hovered" : "")"
+                         style="background-color:@box.ColorHex"
+                         data-box-key="@box.Key"
+                         @onmouseenter="() => OnBoxEnter(box)" @onmouseleave="OnLeave">
+                        <span class="pipeline-box-label">@box.Label</span>
+                        <span class="pipeline-box-icon">📦</span>
+                    </div>
+                }
+            </div>
+        }
+    </div>
+
+    <div class="pipeline-status-bar">@_statusText</div>
+</div>
+
+@code {
+    [Parameter] public IReadOnlyList<ImportDestination> Destinations { get; set; } = Array.Empty<ImportDestination>();
+    [Parameter] public EventCallback<HashSet<string>?> HighlightedKeysChanged { get; set; }
+
+    private const string ColorGreen = "#4caf50";
+    private const string ColorAmber = "#ffc107";
+    private const string ColorRed = "#f44336";
+    private const string ColorLightGray = "#d3d3d3";
+    private const string ColorGray = "#a9a9a9";
+
+    private ElementReference _containerRef;
+    private IJSObjectReference? _module;
+    private bool _resizeWatched;
+
+    private readonly List<DiagramBox> _boxes = new();
+    private readonly List<DiagramBox> _destinationBoxes = new();
+    private readonly List<DiagramLine> _lines = new();
+
+    private DiagramBox? _hoveredBox;
+    private DiagramLine? _hoveredLine;
+    private string _statusText = string.Empty;
+
+    private sealed class DiagramBox
+    {
+        public required string Key { get; init; }
+        public required string Label { get; init; }
+        public required string Icon { get; init; }
+        public int Row { get; init; }
+        public int Column { get; init; }
+        public int ColumnSpan { get; init; } = 1;
+        public string ColorHex { get; set; } = ColorLightGray;
+        public string[]? SettingKeys { get; init; }
+    }
+
+    private sealed class DiagramLine
+    {
+        public required int Id { get; init; }
+        public required string SourceKey { get; init; }
+        public required string TargetKey { get; init; }
+        public required string Label { get; init; }
+        public string ColorHex { get; set; } = ColorGray;
+        public string[]? SettingKeys { get; init; }
+    }
+
+    private static string HeadId(DiagramLine line) => $"pipeline-head-{line.Id}";
+
+    protected override void OnParametersSet()
+    {
+        BuildBoxesAndLines();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/pipelineDiagram.js");
+        await _module.InvokeVoidAsync("positionLines", _containerRef);
+
+        if (!_resizeWatched)
+        {
+            _resizeWatched = true;
+            await _module.InvokeVoidAsync("watchResize", _containerRef);
+        }
+    }
+
+    private void BuildBoxesAndLines()
+    {
+        var siftFolder = AppSettings.GetValue(SettingKey.SiftFolder);
+        var lidarrUrl = AppSettings.GetValue(SettingKey.LidarrURL);
+        var lidarrApiKey = AppSettings.GetValue(SettingKey.LidarrAPIKey);
+        var backupRoot = AppSettings.GetValue(SettingKey.BackupRootFolder);
+        var importPath = AppSettings.GetValue(SettingKey.ImportPathLidarr);
+        var importPathLocal = AppSettings.GetValue(SettingKey.ImportPathCompanion);
+        var copyImportedPath = AppSettings.GetValue(SettingKey.CopyImportedFilesPath);
+        var libraryPath = AppSettings.GetValue(SettingKey.LibraryPathLidarr);
+        var libraryPathLocal = AppSettings.GetValue(SettingKey.LibraryPathCompanion);
+        var backupEnabled = AppSettings.Current.GetTyped<bool>(SettingKey.BackupFilesBeforeImport);
+        var copyEnabled = AppSettings.Current.GetTyped<bool>(SettingKey.CopyImportedFiles);
+        var darkMode = AppSettings.Current.GetTyped<bool>(SettingKey.DarkMode);
+
+        var colorSift = GetPathColor(siftFolder);
+        var colorLidarr = (!string.IsNullOrWhiteSpace(lidarrUrl) && !string.IsNullOrWhiteSpace(lidarrApiKey)) ? ColorGreen : ColorRed;
+        var colorReleases = GetMappedPathColor(importPath, importPathLocal);
+        var colorLibrary = GetMappedPathColor(libraryPath, libraryPathLocal);
+        var colorBackup = GetEnabledPathColor(backupEnabled, backupRoot, ColorLightGray);
+        var colorCopy = GetEnabledPathColor(copyEnabled, copyImportedPath, ColorGray);
+
+        _boxes.Clear();
+        _boxes.Add(new DiagramBox { Key = "SiftTracks", Label = "Sift Tracks", Icon = "🎶", Row = 1, Column = 2, ColorHex = colorSift, SettingKeys = new[] { nameof(SettingKey.SiftFolder) } });
+        _boxes.Add(new DiagramBox { Key = "Lidarr", Label = "Lidarr URL", Icon = "🔗", Row = 2, Column = 2, ColorHex = colorLidarr, SettingKeys = new[] { nameof(SettingKey.LidarrURL), nameof(SettingKey.LidarrAPIKey) } });
+        _boxes.Add(new DiagramBox { Key = "Releases", Label = "Lidarr Releases", Icon = "🎵", Row = 3, Column = 2, ColorHex = colorReleases, SettingKeys = new[] { nameof(SettingKey.ImportPathLidarr), nameof(SettingKey.ImportPathCompanion) } });
+        _boxes.Add(new DiagramBox { Key = "Import", Label = "Lidarr Import", Icon = "📂", Row = 4, Column = 1, ColorHex = colorLibrary, SettingKeys = new[] { nameof(SettingKey.LibraryPathLidarr), nameof(SettingKey.LibraryPathCompanion) } });
+        _boxes.Add(new DiagramBox { Key = "Backup", Label = "Backup Root", Icon = "📁", Row = 5, Column = 1, ColorHex = colorBackup, SettingKeys = new[] { nameof(SettingKey.BackupRootFolder), nameof(SettingKey.BackupFilesBeforeImport) } });
+        _boxes.Add(new DiagramBox { Key = "Copy", Label = "Copy Files", Icon = "📋", Row = 5, Column = 3, ColorHex = colorCopy, SettingKeys = new[] { nameof(SettingKey.CopyImportedFiles), nameof(SettingKey.CopyImportedFilesPath) } });
+
+        _destinationBoxes.Clear();
+        foreach (var dest in Destinations)
+        {
+            _destinationBoxes.Add(new DiagramBox
+            {
+                Key = $"Dest_{dest.Name}",
+                Label = dest.Name,
+                Icon = "📦",
+                ColorHex = GetDestinationColor(dest, darkMode)
+            });
+        }
+
+        _lines.Clear();
+        var id = 0;
+        _lines.Add(new DiagramLine { Id = id++, SourceKey = "SiftTracks", TargetKey = "Lidarr", Label = "Sift Tracks → Lidarr", ColorHex = Merge(colorSift, colorLidarr), SettingKeys = new[] { nameof(SettingKey.SiftFolder), nameof(SettingKey.LidarrURL), nameof(SettingKey.LidarrAPIKey) } });
+        _lines.Add(new DiagramLine { Id = id++, SourceKey = "Lidarr", TargetKey = "Releases", Label = "Lidarr → Releases", ColorHex = Merge(colorLidarr, colorReleases), SettingKeys = new[] { nameof(SettingKey.LidarrURL), nameof(SettingKey.LidarrAPIKey) } });
+        _lines.Add(new DiagramLine { Id = id++, SourceKey = "Releases", TargetKey = "Import", Label = "Releases → Import", ColorHex = Merge(colorReleases, colorLibrary), SettingKeys = new[] { nameof(SettingKey.ImportPathLidarr), nameof(SettingKey.ImportPathCompanion) } });
+        _lines.Add(new DiagramLine { Id = id++, SourceKey = "Import", TargetKey = "Backup", Label = "Import → Backup", ColorHex = Merge(colorLibrary, colorBackup), SettingKeys = new[] { nameof(SettingKey.ImportPathLidarr), nameof(SettingKey.BackupFilesBeforeImport), nameof(SettingKey.BackupRootFolder) } });
+        _lines.Add(new DiagramLine { Id = id++, SourceKey = "Import", TargetKey = "Copy", Label = "Import → Copy", ColorHex = Merge(colorLibrary, colorCopy), SettingKeys = new[] { nameof(SettingKey.ImportPathLidarr), nameof(SettingKey.CopyImportedFiles), nameof(SettingKey.CopyImportedFilesPath) } });
+
+        foreach (var dest in Destinations)
+        {
+            var destColor = string.IsNullOrWhiteSpace(dest.DestinationPath) ? ColorRed
+                : Directory.Exists(dest.DestinationPath) ? ColorGreen : ColorAmber;
+            var destKey = $"Dest_{dest.Name}";
+
+            _lines.Add(new DiagramLine { Id = id++, SourceKey = "Releases", TargetKey = destKey, Label = $"Releases → {dest.Name}", ColorHex = Merge(colorReleases, destColor) });
+
+            if (dest.BackupFiles)
+                _lines.Add(new DiagramLine { Id = id++, SourceKey = destKey, TargetKey = "Backup", Label = $"{dest.Name} → Backup", ColorHex = Merge(destColor, colorBackup) });
+
+            if (dest.CopyFiles)
+                _lines.Add(new DiagramLine { Id = id++, SourceKey = destKey, TargetKey = "Copy", Label = $"{dest.Name} → Copy", ColorHex = Merge(destColor, colorCopy) });
+        }
+    }
+
+    private static string GetPathColor(string? path) =>
+        string.IsNullOrWhiteSpace(path) ? ColorRed : (Directory.Exists(path) ? ColorGreen : ColorAmber);
+
+    private static string GetMappedPathColor(string? serverPath, string? localPath) =>
+        (string.IsNullOrWhiteSpace(serverPath) || string.IsNullOrWhiteSpace(localPath)) ? ColorRed
+        : (Directory.Exists(localPath) ? ColorGreen : ColorAmber);
+
+    private static string GetEnabledPathColor(bool enabled, string? path, string disabledColor) =>
+        !enabled ? disabledColor
+        : string.IsNullOrWhiteSpace(path) ? ColorRed
+        : (Directory.Exists(path) ? ColorGreen : ColorAmber);
+
+    private static string GetDestinationColor(ImportDestination dest, bool darkMode)
+    {
+        if (string.IsNullOrWhiteSpace(dest.DestinationPath) || !Directory.Exists(dest.DestinationPath))
+            return ColorRed;
+
+        var configured = darkMode ? dest.ColorDark : dest.Color;
+        return System.Text.RegularExpressions.Regex.IsMatch(configured ?? string.Empty, "^#[0-9A-Fa-f]{6}$")
+            ? configured!
+            : ColorGreen;
+    }
+
+    private static string Merge(string a, string b)
+    {
+        if (a == ColorRed || b == ColorRed) return ColorRed;
+        if (a == ColorAmber || b == ColorAmber) return ColorAmber;
+        if (a == ColorGray || b == ColorGray || a == ColorLightGray || b == ColorLightGray) return ColorGray;
+        return ColorGreen;
+    }
+
+    private async Task OnBoxEnter(DiagramBox box)
+    {
+        _hoveredBox = box;
+        _statusText = box.Label;
+        await RaiseHighlight(box.SettingKeys);
+    }
+
+    private async Task OnLineEnter(DiagramLine line)
+    {
+        _hoveredLine = line;
+        _statusText = line.Label;
+        await RaiseHighlight(line.SettingKeys);
+    }
+
+    private async Task OnLeave()
+    {
+        _hoveredBox = null;
+        _hoveredLine = null;
+        _statusText = string.Empty;
+        await RaiseHighlight(null);
+    }
+
+    private async Task RaiseHighlight(string[]? keys)
+    {
+        await HighlightedKeysChanged.InvokeAsync(keys is null ? null : new HashSet<string>(keys, StringComparer.OrdinalIgnoreCase));
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_module is not null)
+        {
+            try
+            {
+                await _module.InvokeVoidAsync("unwatchResize", _containerRef);
+                await _module.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+                // Circuit already gone - nothing to clean up client-side.
+            }
+        }
+    }
+}

@@ -1,0 +1,21 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Already cross-platform (unlike the WPF app's cover-art code, which additionally used
+         System.Windows.Media.Imaging just to turn these bytes into a BitmapImage) -->
+    <PackageReference Include="TagLibSharp" Version="2.3.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Lets tests exercise pure-logic helpers (query sanitization, URL filtering, etc.) directly
+         instead of needing HTTP mocking infrastructure just to reach them. -->
+    <InternalsVisibleTo Include="LidarrCompanion.Core.Tests" />
+  </ItemGroup>
+
+</Project>
