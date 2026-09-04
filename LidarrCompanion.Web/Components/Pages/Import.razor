@@ -189,6 +189,22 @@
     private IJSObjectReference? _shortcutsModule;
     private DotNetObjectReference<Import>? _selfRef;
 
+    // Without this, Triage.IsBusy (checked below to gate the whole page's pointer-events via the
+    // "busy" class) is only ever re-evaluated when THIS page's own event handlers call
+    // StateHasChanged - never when a busy operation started/finished elsewhere (a fire-and-forget
+    // refresh already in flight when this page was navigated to, another circuit, a background
+    // job). If that operation finishes after this component's last render, the page is left
+    // showing stale "busy" styling with pointer-events:none forever - and since that blocks every
+    // click, nothing on the page can trigger the re-render that would clear it. StatusBar.razor
+    // already does this correctly for its own status text; this page's busy styling needed the
+    // same live subscription and didn't have it.
+    protected override void OnInitialized()
+    {
+        Status.Changed += OnStatusChanged;
+    }
+
+    private void OnStatusChanged() => InvokeAsync(StateHasChanged);
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
@@ -446,6 +462,7 @@
 
     public async ValueTask DisposeAsync()
     {
+        Status.Changed -= OnStatusChanged;
         _selfRef?.Dispose();
         if (_shortcutsModule is not null)
         {
