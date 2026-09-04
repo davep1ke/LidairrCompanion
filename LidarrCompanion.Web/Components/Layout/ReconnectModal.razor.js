@@ -8,13 +8,26 @@ retryButton.addEventListener("click", retry);
 const resumeButton = document.getElementById("components-resume-button");
 resumeButton.addEventListener("click", resume);
 
+// This app runs in a Docker container that restarts periodically (redeploys, host reboots) - a
+// browser tab left open across one of those has a circuit that's gone for good, not just briefly
+// unreachable. The default template only retries once the tab's visibility *changes*, which never
+// fires if the tab was already the focused/visible one the whole time - leaving the page dead
+// (frozen text, clicks doing nothing, no visible error) until the user thinks to manually reload.
+// This timer forces that reload on its own after a bounded wait instead of relying on a visibility
+// event that may never come.
+const FAILED_STATE_RELOAD_MS = 8000;
+let failedReloadTimer = null;
+
 function handleReconnectStateChanged(event) {
     if (event.detail.state === "show") {
         reconnectModal.showModal();
     } else if (event.detail.state === "hide") {
+        clearTimeout(failedReloadTimer);
         reconnectModal.close();
     } else if (event.detail.state === "failed") {
         document.addEventListener("visibilitychange", retryWhenDocumentBecomesVisible);
+        clearTimeout(failedReloadTimer);
+        failedReloadTimer = setTimeout(() => location.reload(), FAILED_STATE_RELOAD_MS);
     } else if (event.detail.state === "rejected") {
         location.reload();
     }
