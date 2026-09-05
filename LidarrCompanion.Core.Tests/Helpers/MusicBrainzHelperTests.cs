@@ -18,11 +18,17 @@ namespace LidarrCompanion.Core.Tests.Helpers
         }
 
         [Fact]
-        public void BuildReleaseGroupQuery_AlbumClause_IsExactQuotedPhrase()
+        public void BuildReleaseGroupQuery_AlbumClause_IsParenthesizedNotQuoted()
         {
+            // Regression test for a second real bug found the same way as the artist one above:
+            // an exact-phrase-quoted album clause returns 0 results for a file tagged with the
+            // British spelling "Your Favourite Toy" against MusicBrainz's catalogued "Your
+            // Favorite Toy" (Foo Fighters) - confirmed live against the API. Loosening it the same
+            // way as the artist clause fixes it.
             var query = MusicBrainzHelper.BuildReleaseGroupQuery(artist: null, album: "Guetta Blaster");
 
-            Assert.Equal("releasegroup:\"Guetta Blaster\"", query);
+            Assert.Equal("releasegroup:(Guetta Blaster)", query);
+            Assert.DoesNotContain("releasegroup:\"", query);
         }
 
         [Fact]
@@ -30,7 +36,7 @@ namespace LidarrCompanion.Core.Tests.Helpers
         {
             var query = MusicBrainzHelper.BuildReleaseGroupQuery("David Guetta", "Guetta Blaster");
 
-            Assert.Equal("releasegroup:\"Guetta Blaster\" AND artist:(David Guetta)", query);
+            Assert.Equal("releasegroup:(Guetta Blaster) AND artist:(David Guetta)", query);
         }
 
         [Fact]

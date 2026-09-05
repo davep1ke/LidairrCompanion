@@ -64,6 +64,7 @@ else
                     <input @bind="_searchTerm" @bind:event="oninput" placeholder="Search..." />
                     <button @onclick="SearchAutomatic" disabled="@_isBusy">Search MusicBrainz</button>
                     <button @onclick="SearchManual" disabled="@_isBusy">Search Web Images</button>
+                    <button @onclick="BrowseByArtist" disabled="@_isBusy">Browse Artist on MusicBrainz</button>
                 </div>
 
                 @if (_manualResults.Count > 0)
@@ -71,7 +72,22 @@ else
                     <div class="cover-art-results">
                         @foreach (var r in _manualResults)
                         {
-                            <img src="@r.ThumbnailUrl" title="@r.Title" alt="@r.Title" class="cover-art-result-thumb" @onclick="() => SelectManualResult(r)" />
+                            <img src="@r.ThumbnailUrl" title="@r.Title" alt="@r.Title" class="cover-art-result-thumb" @onclick="() => OpenLightboxForSerp(r)" />
+                        }
+                    </div>
+                }
+
+                @if (_browseResults.Count > 0)
+                {
+                    <div class="cover-art-results">
+                        @foreach (var rg in _browseResults)
+                        {
+                            <div class="cover-art-browse-item" @onclick="() => OpenLightboxForBrowse(rg)">
+                                <img src="@($"https://coverartarchive.org/release-group/{rg.Mbid}/front-250")"
+                                     title="@rg.Title" alt="@rg.Title" class="cover-art-result-thumb"
+                                     onerror="this.style.visibility='hidden'" />
+                                <span class="cover-art-browse-title">@rg.Title@(rg.FirstReleaseDate is { Length: >= 4 } d ? $" ({d[..4]})" : "")</span>
+                            </div>
                         }
                     </div>
                 }
@@ -87,6 +103,22 @@ else
             }
         </div>
     </div>
+
+    @if (_lightboxImageSrc is not null)
+    {
+        <div class="cover-art-lightbox-overlay" @onclick="CloseLightbox">
+            <div class="cover-art-lightbox" @onclick:stopPropagation="true">
+                <img src="@_lightboxImageSrc" id="cover-art-lightbox-img"
+                     onload="document.getElementById('cover-art-lightbox-dims').textContent = this.naturalWidth + ' × ' + this.naturalHeight + ' px'"
+                     onerror="document.getElementById('cover-art-lightbox-dims').textContent = 'Image failed to load'" />
+                <div id="cover-art-lightbox-dims" class="cover-art-lightbox-dims"></div>
+                <div class="cover-art-lightbox-actions">
+                    <button @onclick="CommitLightbox" disabled="@_isBusy">Use this image</button>
+                    <button @onclick="CloseLightbox">Close</button>
+                </div>
+            </div>
+        </div>
+    }
 }
 
 @code {
@@ -97,6 +129,16 @@ else
     private byte[]? _stagedImage;
     private string? _stagedMimeType;
     private List<SerpApiImageResult> _manualResults = new();
+    private List<MusicBrainzHelper.ReleaseGroupSummary> _browseResults = new();
+
+    // Lightbox: a shared "preview big, then decide" step for both result grids, replacing the old
+    // behavior where clicking a SerpApi thumbnail downloaded and staged it immediately with no
+    // chance to check it was the right one first. Exactly one of the two source fields is set at
+    // a time, depending on which grid the click came from; CommitLightbox uses whichever is set
+    // to know how to actually fetch the full image once the user confirms.
+    private string? _lightboxImageSrc;
+    private SerpApiImageResult? _lightboxSerpResult;
+    private string? _lightboxMusicBrainzMbid;
 
     private IJSObjectReference? _pasteModule;
     private DotNetObjectReference<CoverArt>? _selfRef;
@@ -148,6 +190,8 @@ else
         _stagedImage = null;
         _stagedMimeType = null;
         _manualResults.Clear();
+        _browseResults.Clear();
+        CloseLightbox();
         _statusMessage = string.Empty;
         _searchTerm = BuildSearchQuery(item);
         StateHasChanged();
@@ -156,15 +200,13 @@ else
             await SearchAutomatic();
     }
 
-    private static string BuildSearchQuery(CoverArtQueueItem item)
-    {
-        var parts = new List<string>();
-        if (!string.IsNullOrWhiteSpace(item.Artist)) parts.Add(item.Artist);
-        if (!string.IsNullOrWhiteSpace(item.Album)) parts.Add(item.Album!);
-        else if (!string.IsNullOrWhiteSpace(item.ReleaseName)) parts.Add(item.ReleaseName);
-        if (parts.Count == 0) parts.Add(Path.GetFileNameWithoutExtension(item.FileName));
-        return string.Join(" ", parts);
-    }
+    // Artist/album text search (used by the MusicBrainz tier) is separate and stays structured -
+    // this is just the default text for the free-text web-image search box. The filename is
+    // usually "Artist - Track" or similar and searches noticeably better in practice than
+    // artist+album alone, which is hit-or-miss for anything not tagged with a clean, exact
+    // official album title.
+    private static string BuildSearchQuery(CoverArtQueueItem item) =>
+        Path.GetFileNameWithoutExtension(item.FileName);
 
     // Tier 1: free automatic lookup (MusicBrainz release-group search + Cover Art Archive).
     private async Task SearchAutomatic()
@@ -207,6 +249,7 @@ else
         _isBusy = true;
         _statusMessage = $"Searching web images for: {_searchTerm}";
         _manualResults.Clear();
+        _browseResults.Clear();
         StateHasChanged();
 
         try
@@ -233,26 +276,100 @@ else
         }
     }
 
-    private async Task SelectManualResult(SerpApiImageResult result)
+    // Tier 3: manual "show everything by this artist" browse, for when even a loosened
+    // MusicBrainz artist+album search finds nothing to auto-stage - lets the user pick the right
+    // release visually instead of the automatic tier just giving up silently.
+    private async Task BrowseByArtist()
     {
-        if (_isBusy) return;
+        if (_current is null || _isBusy) return;
+        if (string.IsNullOrWhiteSpace(_current.Artist))
+        {
+            _statusMessage = "No artist tag available to browse by.";
+            return;
+        }
+
         _isBusy = true;
-        _statusMessage = "Downloading selected image...";
+        _statusMessage = $"Browsing MusicBrainz for '{_current.Artist}'...";
+        _browseResults.Clear();
+        _manualResults.Clear();
         StateHasChanged();
 
         try
         {
-            var serp = new SerpApiHelper();
-            _stagedImage = await serp.DownloadImageAsync(result.FullUrl);
-            _stagedMimeType = "image/jpeg";
-            _statusMessage = "Image loaded - click Save & Next to embed it.";
+            var mb = new MusicBrainzHelper();
+            _browseResults = await mb.BrowseReleaseGroupsByArtistAsync(_current.Artist);
+            _statusMessage = _browseResults.Count == 0
+                ? "No release groups found for this artist."
+                : $"{_browseResults.Count} release(s) found - click one to preview (some may have no cover art).";
         }
         catch (Exception ex)
         {
-            _statusMessage = $"Failed to download image: {ex.Message}";
+            _statusMessage = $"Browse failed: {ex.Message}";
         }
         finally
         {
+            _isBusy = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    // Preview only - no network call yet. SerpApi's own URL and the Cover Art Archive's own URL
+    // are both directly usable as an <img src>, so opening the lightbox is instant; the actual
+    // download only happens if the user clicks "Use this image" in CommitLightbox below.
+    private void OpenLightboxForSerp(SerpApiImageResult result)
+    {
+        _lightboxImageSrc = result.FullUrl;
+        _lightboxSerpResult = result;
+        _lightboxMusicBrainzMbid = null;
+    }
+
+    private void OpenLightboxForBrowse(MusicBrainzHelper.ReleaseGroupSummary releaseGroup)
+    {
+        _lightboxImageSrc = $"https://coverartarchive.org/release-group/{releaseGroup.Mbid}/front-500";
+        _lightboxMusicBrainzMbid = releaseGroup.Mbid;
+        _lightboxSerpResult = null;
+    }
+
+    private void CloseLightbox()
+    {
+        _lightboxImageSrc = null;
+        _lightboxSerpResult = null;
+        _lightboxMusicBrainzMbid = null;
+    }
+
+    private async Task CommitLightbox()
+    {
+        if (_isBusy) return;
+        _isBusy = true;
+        _statusMessage = "Loading selected image...";
+        StateHasChanged();
+
+        try
+        {
+            byte[]? art = _lightboxSerpResult is { } serpResult
+                ? await new SerpApiHelper().DownloadImageAsync(serpResult.FullUrl)
+                : _lightboxMusicBrainzMbid is { } mbid
+                    ? await new MusicBrainzHelper().TryGetCoverArtForReleaseGroupAsync(mbid)
+                    : null;
+
+            if (art is not null)
+            {
+                _stagedImage = art;
+                _stagedMimeType = "image/jpeg";
+                _statusMessage = "Image loaded - click Save & Next to embed it.";
+            }
+            else
+            {
+                _statusMessage = "That release has no cover art available - pick another.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _statusMessage = $"Failed to load image: {ex.Message}";
+        }
+        finally
+        {
+            CloseLightbox();
             _isBusy = false;
             await InvokeAsync(StateHasChanged);
         }

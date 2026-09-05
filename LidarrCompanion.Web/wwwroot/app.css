@@ -1115,6 +1115,62 @@ h1:focus {
     border-color: #4a90d9;
 }
 
+.cover-art-browse-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 8rem;
+    cursor: pointer;
+    gap: 0.25rem;
+}
+
+.cover-art-browse-title {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-align: center;
+    line-height: 1.2;
+    word-break: break-word;
+}
+
+.cover-art-lightbox-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.75);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.cover-art-lightbox {
+    background: #1a1a1a;
+    border-radius: 8px;
+    padding: 1rem;
+    max-width: min(90vw, 40rem);
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.cover-art-lightbox img {
+    max-width: 100%;
+    max-height: 70vh;
+    object-fit: contain;
+    border-radius: 4px;
+}
+
+.cover-art-lightbox-dims {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+.cover-art-lightbox-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
 .cover-art-status {
     color: var(--text-muted);
     font-size: 0.85rem;

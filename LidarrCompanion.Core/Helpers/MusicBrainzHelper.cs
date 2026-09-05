@@ -31,19 +31,21 @@ namespace LidarrCompanion.Helpers
         internal static string SanitizeForQuery(string s) =>
             s.Replace("\"", " ").Replace("(", " ").Replace(")", " ").Trim();
 
-        // Album stays an exact quoted phrase (titles are usually clean and specific enough that
-        // phrase-matching helps). Artist is deliberately NOT phrase-quoted - real file tags
-        // routinely read "David Guetta Feat. JD Davis" or "Bovie & Rox Vs Rivaro", and
-        // MusicBrainz's own artist field only ever holds the single credited name ("David
-        // Guetta"); an exact-phrase match against the messy tag string just never matches
-        // anything. A parenthesised, unquoted clause instead lets Lucene treat it as a set of
-        // terms contributing to relevance rather than a literal phrase, so it still matches when
-        // the tag has extra "feat."/"&"/"vs." text. Extracted so this exact quoting choice - the
-        // root cause of a real "search finds nothing" bug - is directly regression-tested.
+        // Neither clause is phrase-quoted - real file tags routinely read "David Guetta Feat. JD
+        // Davis" for an artist, or carry a regional spelling/edition suffix MusicBrainz's own
+        // title doesn't ("Your Favourite Toy" vs the catalogued "Your Favorite Toy") for an
+        // album. An exact-phrase match against either just never matches when the tag differs
+        // from MusicBrainz's canonical text by so much as one letter - confirmed live against the
+        // API for exactly that Foo Fighters album, which returned zero results phrase-quoted and
+        // two release groups once loosened. A parenthesised, unquoted clause instead lets Lucene
+        // treat it as a set of terms contributing to relevance rather than a literal phrase, so it
+        // still matches when the tag has extra text or minor spelling differences. Extracted so
+        // this exact quoting choice - the root cause of two real "search finds nothing" bugs now -
+        // is directly regression-tested.
         internal static string BuildReleaseGroupQuery(string? artist, string? album)
         {
             var clauses = new List<string>();
-            if (!string.IsNullOrWhiteSpace(album)) clauses.Add($"releasegroup:\"{SanitizeForQuery(album)}\"");
+            if (!string.IsNullOrWhiteSpace(album)) clauses.Add($"releasegroup:({SanitizeForQuery(album)})");
             if (!string.IsNullOrWhiteSpace(artist)) clauses.Add($"artist:({SanitizeForQuery(artist)})");
             return string.Join(" AND ", clauses);
         }
@@ -142,6 +144,69 @@ namespace LidarrCompanion.Helpers
                 Logger.Log($"Cover Art Archive fetch failed for {releaseGroupMbid}: {ex.Message}", LogSeverity.Verbose, new { Mbid = releaseGroupMbid, Error = ex.Message });
                 return null;
             }
+        }
+
+        // Public entry point so a caller that already has a specific release-group mbid (e.g. one
+        // the user picked from BrowseReleaseGroupsByArtistAsync's results) can fetch its art
+        // on demand, without going through the combined artist+album search again.
+        public Task<byte[]?> TryGetCoverArtForReleaseGroupAsync(string releaseGroupMbid) =>
+            TryFetchCoverArtArchiveAsync(releaseGroupMbid);
+
+        public record ReleaseGroupSummary(string Mbid, string Title, string? FirstReleaseDate);
+
+        // Manual "browse everything by this artist" fallback for when even the loosened
+        // artist+album search above finds nothing - an artist-only search naturally returns many
+        // more candidates than the combined query, letting the user pick the right one visually
+        // instead of the automatic tier silently giving up. Deliberately does NOT fetch cover art
+        // for every result up front (that would mean one throttled Cover Art Archive request per
+        // candidate, up to `limit` of them, turning a single click into potentially 20+ seconds of
+        // sequential waiting) - the caller fetches art for just the one(s) the user actually
+        // clicks via TryGetCoverArtForReleaseGroupAsync above.
+        public async Task<List<ReleaseGroupSummary>> BrowseReleaseGroupsByArtistAsync(string artist, int limit = 25)
+        {
+            var results = new List<ReleaseGroupSummary>();
+            if (string.IsNullOrWhiteSpace(artist)) return results;
+
+            try
+            {
+                var query = Uri.EscapeDataString($"artist:({SanitizeForQuery(artist)})");
+                var url = $"{BaseUrl}/release-group/?query={query}&fmt=json&limit={limit}";
+
+                await ThrottleAsync();
+                Logger.Log($"Browsing MusicBrainz release groups for artist='{artist}'", LogSeverity.Verbose, new { Artist = artist, Url = url });
+                var response = await _httpClient.GetAsync(url);
+                if (!response.IsSuccessStatusCode)
+                {
+                    Logger.Log($"MusicBrainz browse-by-artist returned {(int)response.StatusCode}", LogSeverity.Low, new { StatusCode = (int)response.StatusCode });
+                    return results;
+                }
+
+                var content = await response.Content.ReadAsStringAsync();
+                using var doc = JsonDocument.Parse(content);
+
+                if (!doc.RootElement.TryGetProperty("release-groups", out var groups) || groups.ValueKind != JsonValueKind.Array)
+                    return results;
+
+                foreach (var group in groups.EnumerateArray())
+                {
+                    if (!group.TryGetProperty("id", out var idProp)) continue;
+                    var mbid = idProp.GetString();
+                    if (string.IsNullOrWhiteSpace(mbid)) continue;
+
+                    var title = group.TryGetProperty("title", out var titleProp) ? titleProp.GetString() : null;
+                    var firstReleaseDate = group.TryGetProperty("first-release-date", out var dateProp) ? dateProp.GetString() : null;
+
+                    results.Add(new ReleaseGroupSummary(mbid, title ?? "(untitled)", firstReleaseDate));
+                }
+
+                Logger.Log($"MusicBrainz browse-by-artist found {results.Count} release group(s)", LogSeverity.Verbose, new { Count = results.Count });
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"MusicBrainz browse-by-artist failed: {ex.Message}", LogSeverity.Low, new { Artist = artist, Error = ex.Message });
+            }
+
+            return results;
         }
 
         public async Task<List<string>> SearchArtistsRawAsync(string searchTerm)
