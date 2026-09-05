@@ -99,28 +99,53 @@ immediately rather than blocking the triage page. The `/cover-art` page resolves
 resume or cancel the rest of the pipeline. `Import.razor` auto-navigates to `/cover-art` the moment
 a gate opens (`CoverArtGate.HasPending`), rather than making the user click a notification link.
 
-### Cover art search: two tiers
+### Cover art search: Discogs + SerpApi, with a shared preview-then-drag step
 
-1. **Automatic, free** — `MusicBrainzHelper.TryGetCoverArtAsync` searches MusicBrainz
-   release-groups by artist/album text, then fetches art from the Cover Art Archive for the first
-   candidate that has one. Runs unattended per gated file. Throttled to ~1 req/sec (MusicBrainz's
-   unauthenticated rate limit) via a static `SemaphoreSlim` shared across all calls.
-2. **Manual fallback** — `SerpApiHelper`, a Google Images search, only triggered by an explicit
-   "Search Web Images" button click on a genuine miss. SerpApi's free tier is 250 searches/month;
-   **billing is 1 credit per search call regardless of result count** — downloading a selected
-   image is a plain HTTP GET to the image's own host and doesn't touch SerpApi at all, so it's
-   free. Confirmed via SerpApi's own docs, not assumed.
+`DiscogsHelper` (`LidarrCompanion.Core/Helpers`) is the cover-art gate's primary lookup, **not**
+MusicBrainz — moved off MusicBrainz because Discogs' catalog (vinyl, promos, remixes, DJ-culture
+releases) has noticeably better coverage for this app's actual library than MusicBrainz's more
+retail-release-oriented one, and because MusicBrainz kept needing query-forgiveness fixes for
+real-world tag variance (see the git history — two separate exact-phrase-match bugs, on the artist
+field and then the album field, both confirmed live against the API before fixing). Needs a free
+personal access token (`SettingKey.DiscogsToken`, self-serve at
+discogs.com/settings/developers, no approval wait) — Discogs deliberately omits image URLs from
+*unauthenticated* search responses regardless of the per-minute rate limit, confirmed directly
+against the live API, so a missing token means every search comes back with no images at all, not
+a subtler failure.
 
-**MusicBrainz Lucene query gotcha** (a real bug, not a hypothetical — see
-`MusicBrainzHelperTests.BuildReleaseGroupQuery_ArtistClause_IsParenthesizedNotQuoted`): the album
-clause is an exact quoted phrase (`releasegroup:"Guetta Blaster"`), but the artist clause is
-deliberately **not** quoted — it's parenthesized instead (`artist:(David Guetta Feat. JD Davis)`).
-Real file tags routinely carry extra text ("Feat. X", "Vs Y", "&"), and MusicBrainz's artist field
-only ever holds the single clean credited name. An exact-phrase match against the messy tag string
-matches nothing; a parenthesized, unquoted clause lets Lucene score on overlapping terms instead,
-so it still finds the right release group. Verified directly against the live MusicBrainz API
-before fixing (`curl` showing `count: 0` for the quoted form vs. a correct match for the
-parenthesized form).
+`MusicBrainzHelper` itself is untouched and still used for artist search elsewhere
+(`ManualMatchDialog`) — only the cover-art gate's own lookup moved off it. If MusicBrainz's own
+release-title matching is ever revisited, its query builder already went through the same
+loosening fix Discogs never needed (Discogs' search isn't Lucene-exact-phrase in the first place).
+
+Three tiers, all manual (see below for why none of them auto-run or auto-stage):
+1. **`SearchDiscogs`** — structured `artist=`/`release_title=` search via Discogs' own fields
+   (`DiscogsHelper.SearchAsync`).
+2. **`BrowseByArtist`** — artist-only Discogs search for when the structured search finds nothing,
+   showing everything Discogs has for the artist as a clickable grid.
+3. **`SearchManual`** — `SerpApiHelper`, a Google Images search, for when Discogs has nothing at
+   all. SerpApi's free tier is 250 searches/month; **billing is 1 credit per search call
+   regardless of result count** — downloading a selected image is a plain HTTP GET to the image's
+   own host and doesn't touch SerpApi at all, so it's free. Confirmed via SerpApi's own docs, not
+   assumed.
+
+**No tier auto-runs on landing on a file, and no tier auto-stages its first result.** Both used to
+happen (an automatic MusicBrainz search fired the moment an item loaded) and were removed after a
+direct complaint: on a loosened, more-forgiving query, the first hit is more likely to be a
+plausible-but-wrong match than a clearly-bad one, so silently staging it just moves the mistake
+later in the pipeline instead of preventing it. All three tiers now populate a list of candidates
+for the user to look at instead.
+
+**The shared preview-then-drag step** (`_previewSrc`/`LoadPreview`/`CommitPreview` in
+`CoverArt.razor`) replaced an earlier click-thumbnail-straight-to-stage design, and before that a
+modal-dialog lightbox design — both rejected as "click -> open window -> wait -> click" friction.
+Clicking any result thumbnail (from either Discogs tier or the SerpApi grid) loads it into a side
+panel next to the main cover-art box with its pixel dimensions shown (via a plain `onload` JS
+attribute reading `naturalWidth`/`naturalHeight` — no JS interop module needed for that); the user
+then either drags that panel's image onto the main box or clicks "Use this image" as a fallback.
+Both paths call the same `CommitPreview`, which is the only point that actually downloads the full
+image server-side — loading the preview itself is just pointing an `<img>` at Discogs'/SerpApi's
+own URL directly, no network call from the server at all until commit.
 
 ### Global audio player
 

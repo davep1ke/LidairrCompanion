@@ -45,26 +45,44 @@ else
                     <div><strong>File:</strong> @_current.FileName</div>
                 </div>
 
-                <div class="cover-art-preview">
-                    @if (StagedImageDataUri is not null)
+                <div class="cover-art-preview-row">
+                    <div class="cover-art-preview" @ondragover="@(() => {})" @ondragover:preventDefault="true" @ondrop="CommitPreview" @ondrop:preventDefault="true">
+                        @if (StagedImageDataUri is not null)
+                        {
+                            <img src="@StagedImageDataUri" alt="cover art preview" />
+                        }
+                        else if (ExistingImageDataUri is not null)
+                        {
+                            <img src="@ExistingImageDataUri" alt="existing cover art" />
+                        }
+                        else
+                        {
+                            <div class="cover-art-drop-hint">No cover art yet. Search below, then drag a result here (or paste one with Ctrl+V).</div>
+                        }
+                    </div>
+
+                    @if (_previewSrc is not null)
                     {
-                        <img src="@StagedImageDataUri" alt="cover art preview" />
-                    }
-                    else if (ExistingImageDataUri is not null)
-                    {
-                        <img src="@ExistingImageDataUri" alt="existing cover art" />
-                    }
-                    else
-                    {
-                        <div class="cover-art-drop-hint">No cover art yet. Paste an image (Ctrl+V) or pick a result below.</div>
+                        <div class="cover-art-preview-side">
+                            <img src="@_previewSrc" draggable="true" id="cover-art-preview-img"
+                                 ondragstart="event.dataTransfer.setData('text/plain', 'cover-art-candidate')"
+                                 onload="document.getElementById('cover-art-preview-dims').textContent = this.naturalWidth + ' × ' + this.naturalHeight + ' px'"
+                                 onerror="document.getElementById('cover-art-preview-dims').textContent = 'Image failed to load'" />
+                            <div id="cover-art-preview-dims" class="cover-art-preview-dims"></div>
+                            <p class="cover-art-preview-hint">Drag onto the box on the left to use it</p>
+                            <div class="cover-art-preview-side-actions">
+                                <button @onclick="CommitPreview" disabled="@_isBusy">Use this image</button>
+                                <button @onclick="ClearPreview">Dismiss</button>
+                            </div>
+                        </div>
                     }
                 </div>
 
                 <div class="cover-art-search">
                     <input @bind="_searchTerm" @bind:event="oninput" placeholder="Search..." />
-                    <button @onclick="SearchAutomatic" disabled="@_isBusy">Search MusicBrainz</button>
+                    <button @onclick="SearchDiscogs" disabled="@_isBusy">Search Discogs</button>
                     <button @onclick="SearchManual" disabled="@_isBusy">Search Web Images</button>
-                    <button @onclick="BrowseByArtist" disabled="@_isBusy">Browse Artist on MusicBrainz</button>
+                    <button @onclick="BrowseByArtist" disabled="@_isBusy">Browse Artist on Discogs</button>
                 </div>
 
                 @if (_manualResults.Count > 0)
@@ -72,21 +90,21 @@ else
                     <div class="cover-art-results">
                         @foreach (var r in _manualResults)
                         {
-                            <img src="@r.ThumbnailUrl" title="@r.Title" alt="@r.Title" class="cover-art-result-thumb" @onclick="() => OpenLightboxForSerp(r)" />
+                            <img src="@r.ThumbnailUrl" title="@r.Title" alt="@r.Title" class="cover-art-result-thumb" @onclick="() => LoadPreview(r)" />
                         }
                     </div>
                 }
 
-                @if (_browseResults.Count > 0)
+                @if (_discogsResults.Count > 0)
                 {
                     <div class="cover-art-results">
-                        @foreach (var rg in _browseResults)
+                        @foreach (var release in _discogsResults)
                         {
-                            <div class="cover-art-browse-item" @onclick="() => OpenLightboxForBrowse(rg)">
-                                <img src="@($"https://coverartarchive.org/release-group/{rg.Mbid}/front-250")"
-                                     title="@rg.Title" alt="@rg.Title" class="cover-art-result-thumb"
+                            <div class="cover-art-browse-item" @onclick="() => LoadPreview(release)">
+                                <img src="@(release.ThumbUrl ?? release.CoverImageUrl)"
+                                     title="@release.Title" alt="@release.Title" class="cover-art-result-thumb"
                                      onerror="this.style.visibility='hidden'" />
-                                <span class="cover-art-browse-title">@rg.Title@(rg.FirstReleaseDate is { Length: >= 4 } d ? $" ({d[..4]})" : "")</span>
+                                <span class="cover-art-browse-title">@release.Title@(release.Year is { Length: > 0 } y ? $" ({y})" : "")</span>
                             </div>
                         }
                     </div>
@@ -103,22 +121,6 @@ else
             }
         </div>
     </div>
-
-    @if (_lightboxImageSrc is not null)
-    {
-        <div class="cover-art-lightbox-overlay" @onclick="CloseLightbox">
-            <div class="cover-art-lightbox" @onclick:stopPropagation="true">
-                <img src="@_lightboxImageSrc" id="cover-art-lightbox-img"
-                     onload="document.getElementById('cover-art-lightbox-dims').textContent = this.naturalWidth + ' × ' + this.naturalHeight + ' px'"
-                     onerror="document.getElementById('cover-art-lightbox-dims').textContent = 'Image failed to load'" />
-                <div id="cover-art-lightbox-dims" class="cover-art-lightbox-dims"></div>
-                <div class="cover-art-lightbox-actions">
-                    <button @onclick="CommitLightbox" disabled="@_isBusy">Use this image</button>
-                    <button @onclick="CloseLightbox">Close</button>
-                </div>
-            </div>
-        </div>
-    }
 }
 
 @code {
@@ -129,16 +131,17 @@ else
     private byte[]? _stagedImage;
     private string? _stagedMimeType;
     private List<SerpApiImageResult> _manualResults = new();
-    private List<MusicBrainzHelper.ReleaseGroupSummary> _browseResults = new();
+    private List<DiscogsRelease> _discogsResults = new();
 
-    // Lightbox: a shared "preview big, then decide" step for both result grids, replacing the old
-    // behavior where clicking a SerpApi thumbnail downloaded and staged it immediately with no
-    // chance to check it was the right one first. Exactly one of the two source fields is set at
-    // a time, depending on which grid the click came from; CommitLightbox uses whichever is set
-    // to know how to actually fetch the full image once the user confirms.
-    private string? _lightboxImageSrc;
-    private SerpApiImageResult? _lightboxSerpResult;
-    private string? _lightboxMusicBrainzMbid;
+    // Side preview: a shared "load it, then drag it onto the target" step for both result grids,
+    // replacing both the old click-straight-to-stage behavior and an earlier modal-dialog design -
+    // the user specifically didn't want a click -> open window -> wait -> click routine. Exactly
+    // one of the two source fields is set at a time, depending on which grid the click came from;
+    // CommitPreview uses whichever is set to know how to actually fetch the full image, whether
+    // triggered by dropping the preview onto the target box or by the fallback button.
+    private string? _previewSrc;
+    private SerpApiImageResult? _previewSerpResult;
+    private DiscogsRelease? _previewDiscogsRelease;
 
     private IJSObjectReference? _pasteModule;
     private DotNetObjectReference<CoverArt>? _selfRef;
@@ -176,31 +179,31 @@ else
     {
         _current = Gate.PendingItems.FirstOrDefault(i => !i.HasCoverArt) ?? Gate.PendingItems.FirstOrDefault();
         if (_current is not null)
-            _ = LoadItemAsync(_current);
+            LoadItem(_current);
     }
 
-    private async Task SelectItem(CoverArtQueueItem item)
+    private void SelectItem(CoverArtQueueItem item)
     {
         _current = item;
-        await LoadItemAsync(item);
+        LoadItem(item);
     }
 
-    private async Task LoadItemAsync(CoverArtQueueItem item)
+    // Deliberately does NOT auto-run a search on load any more - it used to (against MusicBrainz),
+    // and would silently auto-stage the first result it found, which on a loosened (more
+    // forgiving) query is more likely to be a plausible-but-wrong match than a bad one. Landing on
+    // an item now just shows what's already there; searching is an explicit action the user takes.
+    private void LoadItem(CoverArtQueueItem item)
     {
         _stagedImage = null;
         _stagedMimeType = null;
         _manualResults.Clear();
-        _browseResults.Clear();
-        CloseLightbox();
+        _discogsResults.Clear();
+        ClearPreview();
         _statusMessage = string.Empty;
         _searchTerm = BuildSearchQuery(item);
-        StateHasChanged();
-
-        if (!item.HasCoverArt)
-            await SearchAutomatic();
     }
 
-    // Artist/album text search (used by the MusicBrainz tier) is separate and stays structured -
+    // Artist/album text search (used by the Discogs tiers) is separate and stays structured -
     // this is just the default text for the free-text web-image search box. The filename is
     // usually "Artist - Track" or similar and searches noticeably better in practice than
     // artist+album alone, which is hit-or-miss for anything not tagged with a clean, exact
@@ -208,32 +211,36 @@ else
     private static string BuildSearchQuery(CoverArtQueueItem item) =>
         Path.GetFileNameWithoutExtension(item.FileName);
 
-    // Tier 1: free automatic lookup (MusicBrainz release-group search + Cover Art Archive).
-    private async Task SearchAutomatic()
+    // Tier 1: structured artist+album lookup against Discogs. Populates candidates rather than
+    // auto-staging the first one - see the comment on LoadItem above for why.
+    private async Task SearchDiscogs()
     {
         if (_current is null || _isBusy) return;
+
+        var token = AppSettings.GetValue(SettingKey.DiscogsToken);
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            _statusMessage = "Discogs token is not configured (Settings > CoverArt).";
+            return;
+        }
+
         _isBusy = true;
-        _statusMessage = "Searching MusicBrainz...";
+        _statusMessage = "Searching Discogs...";
+        _discogsResults.Clear();
+        _manualResults.Clear();
         StateHasChanged();
 
         try
         {
-            var mb = new MusicBrainzHelper();
-            var art = await mb.TryGetCoverArtAsync(_current.Artist, _current.Album ?? _current.ReleaseName);
-            if (art is not null)
-            {
-                _stagedImage = art;
-                _stagedMimeType = "image/jpeg";
-                _statusMessage = "Found automatically via MusicBrainz.";
-            }
-            else
-            {
-                _statusMessage = "No automatic match found - try Search Web Images, or paste an image.";
-            }
+            var discogs = new DiscogsHelper();
+            _discogsResults = await discogs.SearchAsync(token, _current.Artist, _current.Album ?? _current.ReleaseName);
+            _statusMessage = _discogsResults.Count == 0
+                ? "No match found - try Browse Artist, Search Web Images, or paste an image."
+                : $"{_discogsResults.Count} result(s) - click one to preview.";
         }
         catch (Exception ex)
         {
-            _statusMessage = $"Automatic search failed: {ex.Message}";
+            _statusMessage = $"Discogs search failed: {ex.Message}";
         }
         finally
         {
@@ -249,7 +256,7 @@ else
         _isBusy = true;
         _statusMessage = $"Searching web images for: {_searchTerm}";
         _manualResults.Clear();
-        _browseResults.Clear();
+        _discogsResults.Clear();
         StateHasChanged();
 
         try
@@ -276,31 +283,40 @@ else
         }
     }
 
-    // Tier 3: manual "show everything by this artist" browse, for when even a loosened
-    // MusicBrainz artist+album search finds nothing to auto-stage - lets the user pick the right
-    // release visually instead of the automatic tier just giving up silently.
+    // Tier 3: manual "show everything by this artist" browse, for when even a structured
+    // artist+album search finds nothing - lets the user pick the right release visually instead
+    // of the automatic tier just giving up silently.
     private async Task BrowseByArtist()
     {
         if (_current is null || _isBusy) return;
-        if (string.IsNullOrWhiteSpace(_current.Artist))
+        if (string.IsNullOrWhiteSpace(_searchTerm))
         {
-            _statusMessage = "No artist tag available to browse by.";
+            _statusMessage = "Enter an artist name in the search box to browse by.";
             return;
         }
 
+        var token = AppSettings.GetValue(SettingKey.DiscogsToken);
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            _statusMessage = "Discogs token is not configured (Settings > CoverArt).";
+            return;
+        }
+
+        // Uses whatever is actually in the search box, not the file's raw artist tag - so
+        // correcting a mistagged/misspelled artist there before clicking actually takes effect.
         _isBusy = true;
-        _statusMessage = $"Browsing MusicBrainz for '{_current.Artist}'...";
-        _browseResults.Clear();
+        _statusMessage = $"Browsing Discogs for '{_searchTerm}'...";
+        _discogsResults.Clear();
         _manualResults.Clear();
         StateHasChanged();
 
         try
         {
-            var mb = new MusicBrainzHelper();
-            _browseResults = await mb.BrowseReleaseGroupsByArtistAsync(_current.Artist);
-            _statusMessage = _browseResults.Count == 0
-                ? "No release groups found for this artist."
-                : $"{_browseResults.Count} release(s) found - click one to preview (some may have no cover art).";
+            var discogs = new DiscogsHelper();
+            _discogsResults = await discogs.BrowseByArtistAsync(token, _searchTerm);
+            _statusMessage = _discogsResults.Count == 0
+                ? "No releases found for this artist."
+                : $"{_discogsResults.Count} release(s) found - click one to preview.";
         }
         catch (Exception ex)
         {
@@ -313,43 +329,43 @@ else
         }
     }
 
-    // Preview only - no network call yet. SerpApi's own URL and the Cover Art Archive's own URL
-    // are both directly usable as an <img src>, so opening the lightbox is instant; the actual
-    // download only happens if the user clicks "Use this image" in CommitLightbox below.
-    private void OpenLightboxForSerp(SerpApiImageResult result)
+    // Preview only - no network call yet. SerpApi's and Discogs' own image URLs are both directly
+    // usable as an <img src>, so loading the preview is instant; the actual download only happens
+    // on commit (drag onto the target box, or the fallback button).
+    private void LoadPreview(SerpApiImageResult result)
     {
-        _lightboxImageSrc = result.FullUrl;
-        _lightboxSerpResult = result;
-        _lightboxMusicBrainzMbid = null;
+        _previewSrc = result.FullUrl;
+        _previewSerpResult = result;
+        _previewDiscogsRelease = null;
     }
 
-    private void OpenLightboxForBrowse(MusicBrainzHelper.ReleaseGroupSummary releaseGroup)
+    private void LoadPreview(DiscogsRelease release)
     {
-        _lightboxImageSrc = $"https://coverartarchive.org/release-group/{releaseGroup.Mbid}/front-500";
-        _lightboxMusicBrainzMbid = releaseGroup.Mbid;
-        _lightboxSerpResult = null;
+        _previewSrc = release.CoverImageUrl ?? release.ThumbUrl;
+        _previewDiscogsRelease = release;
+        _previewSerpResult = null;
     }
 
-    private void CloseLightbox()
+    private void ClearPreview()
     {
-        _lightboxImageSrc = null;
-        _lightboxSerpResult = null;
-        _lightboxMusicBrainzMbid = null;
+        _previewSrc = null;
+        _previewSerpResult = null;
+        _previewDiscogsRelease = null;
     }
 
-    private async Task CommitLightbox()
+    private async Task CommitPreview()
     {
-        if (_isBusy) return;
+        if (_isBusy || _previewSrc is null) return;
         _isBusy = true;
         _statusMessage = "Loading selected image...";
         StateHasChanged();
 
         try
         {
-            byte[]? art = _lightboxSerpResult is { } serpResult
+            byte[]? art = _previewSerpResult is { } serpResult
                 ? await new SerpApiHelper().DownloadImageAsync(serpResult.FullUrl)
-                : _lightboxMusicBrainzMbid is { } mbid
-                    ? await new MusicBrainzHelper().TryGetCoverArtForReleaseGroupAsync(mbid)
+                : _previewDiscogsRelease is { } release && (release.CoverImageUrl ?? release.ThumbUrl) is { } imageUrl
+                    ? await new DiscogsHelper().DownloadImageAsync(imageUrl)
                     : null;
 
             if (art is not null)
@@ -369,7 +385,7 @@ else
         }
         finally
         {
-            CloseLightbox();
+            ClearPreview();
             _isBusy = false;
             await InvokeAsync(StateHasChanged);
         }
@@ -413,7 +429,7 @@ else
         var next = Gate.PendingItems.Skip(currentIndex + 1).FirstOrDefault()
             ?? Gate.PendingItems.FirstOrDefault(i => i != _current);
         if (next is not null)
-            _ = SelectItem(next);
+            SelectItem(next);
     }
 
     private async Task Complete()

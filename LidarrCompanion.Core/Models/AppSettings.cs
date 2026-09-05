@@ -177,10 +177,13 @@ namespace LidarrCompanion.Models
         [Setting(typeof(int), "Default metadata profile ID used when creating a new artist", 5, "Import")]
         DefaultArtistMetadataProfileId,
 
-        // Cover art gate (Phase 6): automatic lookup is free (MusicBrainz/Cover Art Archive, no
-        // key needed); SerpApi is a manual-only fallback for files with no automatic match.
-        [Setting(typeof(string), "SerpApi key for manual cover-art image search (used only as a fallback when the automatic MusicBrainz lookup finds nothing)", "CoverArt")]
+        // Cover art gate (Phase 6): Discogs (structured artist/release search, needs a free
+        // personal access token - see discogs.com/settings/developers) is the primary lookup;
+        // SerpApi is a manual-only fallback for files it doesn't find anything for.
+        [Setting(typeof(string), "SerpApi key for manual cover-art image search (used only as a fallback when the Discogs lookup finds nothing)", "CoverArt")]
         SerpApiKey,
+        [Setting(typeof(string), "Discogs personal access token for cover-art lookup (generate one free at discogs.com/settings/developers)", "CoverArt")]
+        DiscogsToken,
     }
 
 
