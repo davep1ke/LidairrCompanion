@@ -18,5 +18,19 @@ namespace LidarrCompanion.Core.Tests.Helpers
         {
             Assert.Equal(expected, SerpApiHelper.IsFetchableUrl(url));
         }
+
+        [Theory]
+        [InlineData("https://media.tenor.com/B9_pYXrrTGUAAAAM/yes.gif", true)]
+        [InlineData("https://media4.giphy.com/media/abc/200.gif", true)]
+        [InlineData("HTTPS://EXAMPLE.COM/IMAGE.GIF", true)]
+        [InlineData("https://example.com/image.gif?width=500", true)]
+        [InlineData("https://example.com/image.jpg", false)]
+        [InlineData("https://example.com/gif-of-the-day.html", false)]
+        [InlineData(null, false)]
+        [InlineData("", false)]
+        public void IsGifUrl_DetectsGifExtensionIgnoringCaseAndQueryString(string? url, bool expected)
+        {
+            Assert.Equal(expected, SerpApiHelper.IsGifUrl(url));
+        }
     }
 }

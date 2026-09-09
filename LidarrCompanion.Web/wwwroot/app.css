@@ -1062,7 +1062,7 @@ h1:focus {
 }
 
 .cover-art-preview {
-    height: 16rem;
+    height: 32rem;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1097,13 +1097,22 @@ h1:focus {
     display: flex;
     flex-wrap: wrap;
     gap: 0.5rem;
-    max-height: 20rem;
+    max-height: 26rem;
     overflow-y: auto;
 }
 
+.cover-art-autosearch {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
 .cover-art-result-thumb {
-    width: 8rem;
-    height: 8rem;
+    width: 10.4rem;
+    height: 10.4rem;
     object-fit: cover;
     border-radius: 4px;
     cursor: pointer;
@@ -1119,7 +1128,7 @@ h1:focus {
     display: flex;
     flex-direction: column;
     align-items: center;
-    width: 8rem;
+    width: 10.4rem;
     cursor: pointer;
     gap: 0.25rem;
 }
@@ -1144,7 +1153,7 @@ h1:focus {
 }
 
 .cover-art-preview-side {
-    flex: 0 0 12rem;
+    flex: 0 0 24rem;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -1156,7 +1165,7 @@ h1:focus {
 
 .cover-art-preview-side img {
     max-width: 100%;
-    max-height: 10rem;
+    max-height: 20rem;
     object-fit: contain;
     border-radius: 4px;
     cursor: grab;

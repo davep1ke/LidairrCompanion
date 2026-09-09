@@ -8,6 +8,10 @@ namespace LidarrCompanion.Helpers
         public string ThumbnailUrl { get; set; } = string.Empty;
         public string FullUrl { get; set; } = string.Empty;
         public string? Title { get; set; }
+        // SerpApi provides these directly on the search response (original_width/original_height) -
+        // no need to load the image just to know its size.
+        public int? Width { get; set; }
+        public int? Height { get; set; }
     }
 
     // Manual-only fallback image search, used solely when the free MusicBrainz/Cover Art Archive
@@ -17,7 +21,11 @@ namespace LidarrCompanion.Helpers
     {
         private static readonly HttpClient _httpClient = new HttpClient();
 
-        public async Task<List<SerpApiImageResult>> SearchImagesAsync(string apiKey, string query, int limit = 16)
+        // limit default raised from 16 to 60 - SerpApi already returns up to 100 results per
+        // search call (confirmed directly against the live API) at no extra cost, so the old
+        // default was throwing away results the same call already paid for, not a real API
+        // constraint.
+        public async Task<List<SerpApiImageResult>> SearchImagesAsync(string apiKey, string query, int limit = 60)
         {
             if (string.IsNullOrWhiteSpace(apiKey))
                 throw new InvalidOperationException("SerpApi key is not configured.");
@@ -42,6 +50,8 @@ namespace LidarrCompanion.Helpers
                     var thumbnail = img.TryGetProperty("thumbnail", out var t) ? t.GetString() : null;
                     var original = img.TryGetProperty("original", out var o) ? o.GetString() : null;
                     var title = img.TryGetProperty("title", out var ti) ? ti.GetString() : null;
+                    var width = img.TryGetProperty("original_width", out var w) && w.ValueKind == JsonValueKind.Number ? w.GetInt32() : (int?)null;
+                    var height = img.TryGetProperty("original_height", out var h) && h.ValueKind == JsonValueKind.Number ? h.GetInt32() : (int?)null;
 
                     // "original" can be a non-fetchable "x-raw-image://..." pseudo-URL for some
                     // results (a known quirk of Google's own image data, not a SerpApi bug) -
@@ -54,11 +64,21 @@ namespace LidarrCompanion.Helpers
                     var full = fetchableOriginal ?? fetchableThumbnail;
                     if (string.IsNullOrWhiteSpace(full)) continue;
 
+                    // Google Images results routinely include animated GIFs (confirmed live - a
+                    // "reaction gif"-style query returned 77/100 results as .gif) which are never
+                    // right for cover art. No dedicated "is animated" field exists in the API
+                    // response, so this is a plain extension check on whichever URL was chosen
+                    // above - not foolproof (a GIF served without that extension slips through)
+                    // but covers the overwhelming majority of real cases.
+                    if (IsGifUrl(full)) continue;
+
                     results.Add(new SerpApiImageResult
                     {
                         ThumbnailUrl = full,
                         FullUrl = full,
-                        Title = title
+                        Title = title,
+                        Width = width,
+                        Height = height
                     });
                 }
             }
@@ -74,5 +94,12 @@ namespace LidarrCompanion.Helpers
         internal static bool IsFetchableUrl(string? url) =>
             !string.IsNullOrWhiteSpace(url) && Uri.TryCreate(url, UriKind.Absolute, out var u) &&
             (u.Scheme == Uri.UriSchemeHttp || u.Scheme == Uri.UriSchemeHttps);
+
+        internal static bool IsGifUrl(string? url)
+        {
+            if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url, UriKind.Absolute, out var u))
+                return false;
+            return u.AbsolutePath.EndsWith(".gif", StringComparison.OrdinalIgnoreCase);
+        }
     }
 }

@@ -79,6 +79,9 @@
                 <button @onclick="SearchDiscogs" disabled="@_isBusy">Search Discogs</button>
                 <button @onclick="SearchManual" disabled="@_isBusy">Search Web Images</button>
                 <button @onclick="BrowseByArtist" disabled="@_isBusy">Browse Artist on Discogs</button>
+                <label class="cover-art-autosearch">
+                    <input type="checkbox" @bind="_autoSearchEnabled" /> Auto-search
+                </label>
             </div>
 
             @if (_manualResults.Count > 0)
@@ -86,7 +89,10 @@
                 <div class="cover-art-results">
                     @foreach (var r in _manualResults)
                     {
-                        <img src="@r.ThumbnailUrl" title="@r.Title" alt="@r.Title" class="cover-art-result-thumb" @onclick="() => LoadPreview(r)" />
+                        <div class="cover-art-browse-item" @onclick="() => LoadPreview(r)">
+                            <img src="@r.ThumbnailUrl" title="@r.Title" alt="@r.Title" class="cover-art-result-thumb" />
+                            <span class="cover-art-browse-title">@(r.Width is { } w && r.Height is { } h ? $"{w} × {h}" : string.Empty)</span>
+                        </div>
                     }
                 </div>
             }
@@ -109,8 +115,9 @@
             <p class="cover-art-status">@_statusMessage</p>
 
             <div class="cover-art-actions">
-                <button @onclick="SaveToFile" disabled="@(_stagedImage is null || _isBusy)">Save to File</button>
-                <button @onclick="SkipToNext" disabled="@_isBusy">Next File</button>
+                <button @onclick="SaveAndNext" disabled="@(_stagedImage is null || _isBusy)">@(IsLastMissing ? "Save and Continue" : "Save and Next")</button>
+                <button @onclick="ResetImage" disabled="@(_stagedImage is null || _isBusy)">Reset</button>
+                <button @onclick="SkipToNext" disabled="@_isBusy">Skip</button>
             </div>
         }
     </div>
@@ -136,6 +143,7 @@
     private string _searchTerm = string.Empty;
     private string _statusMessage = string.Empty;
     private bool _isBusy;
+    private bool _autoSearchEnabled;
     private byte[]? _stagedImage;
     private string? _stagedMimeType;
     private List<SerpApiImageResult> _manualResults = new();
@@ -144,6 +152,8 @@
     private string? _previewSrc;
     private SerpApiImageResult? _previewSerpResult;
     private DiscogsRelease? _previewDiscogsRelease;
+
+    private bool IsLastMissing => _items.Count(i => !i.HasCoverArt) <= 1;
 
     private string? ExistingImageDataUri => _current?.CoverArtPreview is { } bytes
         ? $"data:{_current.CoverArtMimeType ?? "image/jpeg"};base64,{Convert.ToBase64String(bytes)}"
@@ -186,8 +196,16 @@
             });
         }
 
+        SortItems();
         _statusMessage = $"Loaded {_items.Count} file(s) from {TestFolder}.";
         if (_items.Count > 0) SelectItem(_items.FirstOrDefault(i => !i.HasCoverArt) ?? _items[0]);
+    }
+
+    // Files without art first (grouped), then alphabetical within each group - matches the
+    // original WPF app's list ordering and keeps whatever still needs attention at the top.
+    private void SortItems()
+    {
+        _items = _items.OrderBy(i => i.HasCoverArt).ThenBy(i => i.FileName, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     private void SelectItem(TestItem item)
@@ -200,6 +218,8 @@
         ClearPreview();
         _statusMessage = string.Empty;
         _searchTerm = Path.GetFileNameWithoutExtension(item.FileName);
+
+        if (_autoSearchEnabled) _ = SearchManual();
     }
 
     private async Task SearchDiscogs()
@@ -352,7 +372,7 @@
             {
                 _stagedImage = art;
                 _stagedMimeType = "image/jpeg";
-                _statusMessage = "Image loaded - click Save to File to embed it.";
+                _statusMessage = "Image loaded - click Save and Next to embed it.";
             }
             else
             {
@@ -371,23 +391,41 @@
         }
     }
 
-    private void SaveToFile()
+    // Saves the staged image to the real file (same FileAndAudioService.SaveCoverArt the real
+    // /cover-art page uses) and advances to the next file still missing art, same as the real
+    // page's "Save & Next"/"Save & Finish" pair.
+    private void SaveAndNext()
     {
         if (_current is null || _stagedImage is null) return;
 
-        if (FileAndAudioService.SaveCoverArt(_current.FilePath, _stagedImage))
-        {
-            _current.HasCoverArt = true;
-            _current.CoverArtPreview = _stagedImage;
-            _current.CoverArtMimeType = _stagedMimeType;
-            _stagedImage = null;
-            _stagedMimeType = null;
-            _statusMessage = "Saved to file.";
-        }
-        else
+        if (!FileAndAudioService.SaveCoverArt(_current.FilePath, _stagedImage))
         {
             _statusMessage = "Failed to save cover art to the file.";
+            return;
         }
+
+        _current.HasCoverArt = true;
+        _current.CoverArtPreview = _stagedImage;
+        _current.CoverArtMimeType = _stagedMimeType;
+        _stagedImage = null;
+        _stagedMimeType = null;
+        SortItems();
+
+        var next = _items.FirstOrDefault(i => !i.HasCoverArt);
+        if (next is not null)
+            SelectItem(next);
+        else
+            _statusMessage = "Saved. All test files now have cover art.";
+    }
+
+    // Discards the staged (not-yet-saved) image, reverting the preview back to whatever was
+    // already embedded in the file - nothing on disk has changed yet at this point, so this is
+    // just clearing the in-memory override.
+    private void ResetImage()
+    {
+        _stagedImage = null;
+        _stagedMimeType = null;
+        _statusMessage = "Reset to original cover art.";
     }
 
     private void SkipToNext()
