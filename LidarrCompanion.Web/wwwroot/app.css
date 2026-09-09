@@ -1093,12 +1093,18 @@ h1:focus {
     flex: 1 1 auto;
 }
 
+.cover-art-results-frame {
+    max-height: 26rem;
+    overflow-y: auto;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    padding: 0.5rem;
+}
+
 .cover-art-results {
     display: flex;
     flex-wrap: wrap;
     gap: 0.5rem;
-    max-height: 26rem;
-    overflow-y: auto;
 }
 
 .cover-art-autosearch {

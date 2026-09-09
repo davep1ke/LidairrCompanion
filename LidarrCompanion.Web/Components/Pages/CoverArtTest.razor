@@ -41,6 +41,49 @@
                 <div><strong>File:</strong> @_current.FileName</div>
             </div>
 
+            <div class="cover-art-search">
+                <input @bind="_searchTerm" @bind:event="oninput" placeholder="Search..." />
+                <button @onclick="SearchDiscogs" disabled="@_isBusy">Search Discogs</button>
+                <button @onclick="SearchManual" disabled="@_isBusy">Search Web Images</button>
+                <button @onclick="BrowseByArtist" disabled="@_isBusy">Browse Artist on Discogs</button>
+                <label class="cover-art-autosearch">
+                    <input type="checkbox" @bind="_autoSearchEnabled" /> Auto-search
+                </label>
+            </div>
+
+            @* Results scroll in their own fixed-height frame, with the cover art box and the
+               selected-result preview always visible below - so paging through a long result
+               list never pushes the thing you're actually trying to look at off screen. *@
+            <div class="cover-art-results-frame">
+                @if (_manualResults.Count > 0)
+                {
+                    <div class="cover-art-results">
+                        @foreach (var r in _manualResults)
+                        {
+                            <div class="cover-art-browse-item" @onclick="() => LoadPreview(r)">
+                                <img src="@r.ThumbnailUrl" title="@r.Title" alt="@r.Title" class="cover-art-result-thumb" />
+                                <span class="cover-art-browse-title">@(r.Width is { } w && r.Height is { } h ? $"{w} × {h}" : string.Empty)</span>
+                            </div>
+                        }
+                    </div>
+                }
+
+                @if (_discogsResults.Count > 0)
+                {
+                    <div class="cover-art-results">
+                        @foreach (var release in _discogsResults)
+                        {
+                            <div class="cover-art-browse-item" @onclick="() => LoadPreview(release)">
+                                <img src="@(release.ThumbUrl ?? release.CoverImageUrl)"
+                                     title="@release.Title" alt="@release.Title" class="cover-art-result-thumb"
+                                     onerror="this.style.visibility='hidden'" />
+                                <span class="cover-art-browse-title">@release.Title@(release.Year is { Length: > 0 } y ? $" ({y})" : "")</span>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+
             <div class="cover-art-preview-row">
                 <div class="cover-art-preview" @ondragover="@(() => {})" @ondragover:preventDefault="true" @ondrop="CommitPreview" @ondrop:preventDefault="true">
                     @if (StagedImageDataUri is not null)
@@ -53,7 +96,7 @@
                     }
                     else
                     {
-                        <div class="cover-art-drop-hint">No cover art yet. Search below, then drag a result here.</div>
+                        <div class="cover-art-drop-hint">No cover art yet. Search above, then drag a result here.</div>
                     }
                 </div>
 
@@ -73,44 +116,6 @@
                     </div>
                 }
             </div>
-
-            <div class="cover-art-search">
-                <input @bind="_searchTerm" @bind:event="oninput" placeholder="Search..." />
-                <button @onclick="SearchDiscogs" disabled="@_isBusy">Search Discogs</button>
-                <button @onclick="SearchManual" disabled="@_isBusy">Search Web Images</button>
-                <button @onclick="BrowseByArtist" disabled="@_isBusy">Browse Artist on Discogs</button>
-                <label class="cover-art-autosearch">
-                    <input type="checkbox" @bind="_autoSearchEnabled" /> Auto-search
-                </label>
-            </div>
-
-            @if (_manualResults.Count > 0)
-            {
-                <div class="cover-art-results">
-                    @foreach (var r in _manualResults)
-                    {
-                        <div class="cover-art-browse-item" @onclick="() => LoadPreview(r)">
-                            <img src="@r.ThumbnailUrl" title="@r.Title" alt="@r.Title" class="cover-art-result-thumb" />
-                            <span class="cover-art-browse-title">@(r.Width is { } w && r.Height is { } h ? $"{w} × {h}" : string.Empty)</span>
-                        </div>
-                    }
-                </div>
-            }
-
-            @if (_discogsResults.Count > 0)
-            {
-                <div class="cover-art-results">
-                    @foreach (var release in _discogsResults)
-                    {
-                        <div class="cover-art-browse-item" @onclick="() => LoadPreview(release)">
-                            <img src="@(release.ThumbUrl ?? release.CoverImageUrl)"
-                                 title="@release.Title" alt="@release.Title" class="cover-art-result-thumb"
-                                 onerror="this.style.visibility='hidden'" />
-                            <span class="cover-art-browse-title">@release.Title@(release.Year is { Length: > 0 } y ? $" ({y})" : "")</span>
-                        </div>
-                    }
-                </div>
-            }
 
             <p class="cover-art-status">@_statusMessage</p>
 
