@@ -1,0 +1,400 @@
+@page "/cover-art-test"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@using LidarrCompanion.Helpers
+@using LidarrCompanion.Models
+@using LidarrCompanion.Services
+
+<PageTitle>Cover Art Test - LidarrCompanion</PageTitle>
+
+@* Temporary dev harness - NOT part of the real import pipeline. Works directly against a folder
+   of real files (copies, not the originals) so the search/preview/drag-and-drop UX can be
+   iterated on without going through Triage -> Move -> the cover-art gate every time, and without
+   a configured Discogs token (SerpApi alone is enough to test the drag mechanic). Point
+   TestFolder at wherever the test copies live; remove this page and its NavMenu link once the
+   real /cover-art flow doesn't need this kind of quick iteration any more. *@
+
+<div class="cover-art-page">
+    <div class="cover-art-list">
+        <h2>Test Files (@_items.Count(i => i.HasCoverArt)/@_items.Count have art)</h2>
+        <table class="triage-table">
+            <thead><tr><th></th><th>File</th></tr></thead>
+            <tbody>
+                @foreach (var item in _items)
+                {
+                    <tr class="@(item == _current ? "row-selected" : "")" @onclick="() => SelectItem(item)">
+                        <td>@(item.HasCoverArt ? "✓" : "")</td>
+                        <td>@item.FileName</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        <p class="cover-art-status">Folder: @TestFolder</p>
+        <button @onclick="RescanFolder" disabled="@_isBusy">Rescan Folder</button>
+    </div>
+
+    <div class="cover-art-detail">
+        @if (_current is not null)
+        {
+            <div class="cover-art-info">
+                <div><strong>Artist:</strong> @(_current.Artist ?? "-")</div>
+                <div><strong>Album:</strong> @(_current.Album ?? "-")</div>
+                <div><strong>File:</strong> @_current.FileName</div>
+            </div>
+
+            <div class="cover-art-preview-row">
+                <div class="cover-art-preview" @ondragover="@(() => {})" @ondragover:preventDefault="true" @ondrop="CommitPreview" @ondrop:preventDefault="true">
+                    @if (StagedImageDataUri is not null)
+                    {
+                        <img src="@StagedImageDataUri" alt="cover art preview" />
+                    }
+                    else if (ExistingImageDataUri is not null)
+                    {
+                        <img src="@ExistingImageDataUri" alt="existing cover art" />
+                    }
+                    else
+                    {
+                        <div class="cover-art-drop-hint">No cover art yet. Search below, then drag a result here.</div>
+                    }
+                </div>
+
+                @if (_previewSrc is not null)
+                {
+                    <div class="cover-art-preview-side">
+                        <img src="@_previewSrc" draggable="true" id="cover-art-preview-img"
+                             ondragstart="event.dataTransfer.setData('text/plain', 'cover-art-candidate')"
+                             onload="document.getElementById('cover-art-preview-dims').textContent = this.naturalWidth + ' × ' + this.naturalHeight + ' px'"
+                             onerror="document.getElementById('cover-art-preview-dims').textContent = 'Image failed to load'" />
+                        <div id="cover-art-preview-dims" class="cover-art-preview-dims"></div>
+                        <p class="cover-art-preview-hint">Drag onto the box on the left to use it</p>
+                        <div class="cover-art-preview-side-actions">
+                            <button @onclick="CommitPreview" disabled="@_isBusy">Use this image</button>
+                            <button @onclick="ClearPreview">Dismiss</button>
+                        </div>
+                    </div>
+                }
+            </div>
+
+            <div class="cover-art-search">
+                <input @bind="_searchTerm" @bind:event="oninput" placeholder="Search..." />
+                <button @onclick="SearchDiscogs" disabled="@_isBusy">Search Discogs</button>
+                <button @onclick="SearchManual" disabled="@_isBusy">Search Web Images</button>
+                <button @onclick="BrowseByArtist" disabled="@_isBusy">Browse Artist on Discogs</button>
+            </div>
+
+            @if (_manualResults.Count > 0)
+            {
+                <div class="cover-art-results">
+                    @foreach (var r in _manualResults)
+                    {
+                        <img src="@r.ThumbnailUrl" title="@r.Title" alt="@r.Title" class="cover-art-result-thumb" @onclick="() => LoadPreview(r)" />
+                    }
+                </div>
+            }
+
+            @if (_discogsResults.Count > 0)
+            {
+                <div class="cover-art-results">
+                    @foreach (var release in _discogsResults)
+                    {
+                        <div class="cover-art-browse-item" @onclick="() => LoadPreview(release)">
+                            <img src="@(release.ThumbUrl ?? release.CoverImageUrl)"
+                                 title="@release.Title" alt="@release.Title" class="cover-art-result-thumb"
+                                 onerror="this.style.visibility='hidden'" />
+                            <span class="cover-art-browse-title">@release.Title@(release.Year is { Length: > 0 } y ? $" ({y})" : "")</span>
+                        </div>
+                    }
+                </div>
+            }
+
+            <p class="cover-art-status">@_statusMessage</p>
+
+            <div class="cover-art-actions">
+                <button @onclick="SaveToFile" disabled="@(_stagedImage is null || _isBusy)">Save to File</button>
+                <button @onclick="SkipToNext" disabled="@_isBusy">Next File</button>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    // Hardcoded on purpose - this is a throwaway dev harness, not a real setting.
+    private const string TestFolder = "/mnt/Music/.cover-art-test";
+
+    private class TestItem
+    {
+        public required string FilePath { get; init; }
+        public required string FileName { get; init; }
+        public string? Artist { get; set; }
+        public string? Album { get; set; }
+        public bool HasCoverArt { get; set; }
+        public byte[]? CoverArtPreview { get; set; }
+        public string? CoverArtMimeType { get; set; }
+    }
+
+    private List<TestItem> _items = new();
+    private TestItem? _current;
+    private string _searchTerm = string.Empty;
+    private string _statusMessage = string.Empty;
+    private bool _isBusy;
+    private byte[]? _stagedImage;
+    private string? _stagedMimeType;
+    private List<SerpApiImageResult> _manualResults = new();
+    private List<DiscogsRelease> _discogsResults = new();
+
+    private string? _previewSrc;
+    private SerpApiImageResult? _previewSerpResult;
+    private DiscogsRelease? _previewDiscogsRelease;
+
+    private string? ExistingImageDataUri => _current?.CoverArtPreview is { } bytes
+        ? $"data:{_current.CoverArtMimeType ?? "image/jpeg"};base64,{Convert.ToBase64String(bytes)}"
+        : null;
+
+    private string? StagedImageDataUri => _stagedImage is { } bytes
+        ? $"data:{_stagedMimeType ?? "image/jpeg"};base64,{Convert.ToBase64String(bytes)}"
+        : null;
+
+    protected override void OnInitialized() => RescanFolder();
+
+    private void RescanFolder()
+    {
+        _items.Clear();
+        _current = null;
+
+        if (!Directory.Exists(TestFolder))
+        {
+            _statusMessage = $"Test folder does not exist: {TestFolder}";
+            return;
+        }
+
+        foreach (var path in Directory.GetFiles(TestFolder).OrderBy(p => p))
+        {
+            if (!FileAndAudioService.AudioExtensions.Contains(Path.GetExtension(path).ToLowerInvariant()))
+                continue;
+
+            var (artist, _, album, _) = FileAndAudioService.ExtractMetadata(path);
+            var existingArt = FileAndAudioService.ExtractCoverArt(path);
+
+            _items.Add(new TestItem
+            {
+                FilePath = path,
+                FileName = Path.GetFileName(path),
+                Artist = string.IsNullOrWhiteSpace(artist) ? null : artist,
+                Album = string.IsNullOrWhiteSpace(album) ? null : album,
+                HasCoverArt = existingArt is not null,
+                CoverArtPreview = existingArt?.Data,
+                CoverArtMimeType = existingArt?.MimeType
+            });
+        }
+
+        _statusMessage = $"Loaded {_items.Count} file(s) from {TestFolder}.";
+        if (_items.Count > 0) SelectItem(_items.FirstOrDefault(i => !i.HasCoverArt) ?? _items[0]);
+    }
+
+    private void SelectItem(TestItem item)
+    {
+        _current = item;
+        _stagedImage = null;
+        _stagedMimeType = null;
+        _manualResults.Clear();
+        _discogsResults.Clear();
+        ClearPreview();
+        _statusMessage = string.Empty;
+        _searchTerm = Path.GetFileNameWithoutExtension(item.FileName);
+    }
+
+    private async Task SearchDiscogs()
+    {
+        if (_current is null || _isBusy) return;
+
+        var token = AppSettings.GetValue(SettingKey.DiscogsToken);
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            _statusMessage = "Discogs token is not configured (Settings > CoverArt).";
+            return;
+        }
+
+        _isBusy = true;
+        _statusMessage = "Searching Discogs...";
+        _discogsResults.Clear();
+        _manualResults.Clear();
+        StateHasChanged();
+
+        try
+        {
+            var discogs = new DiscogsHelper();
+            _discogsResults = await discogs.SearchAsync(token, _current.Artist, _current.Album);
+            _statusMessage = _discogsResults.Count == 0
+                ? "No match found - try Browse Artist or Search Web Images."
+                : $"{_discogsResults.Count} result(s) - click one to preview.";
+        }
+        catch (Exception ex)
+        {
+            _statusMessage = $"Discogs search failed: {ex.Message}";
+        }
+        finally
+        {
+            _isBusy = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task SearchManual()
+    {
+        if (_isBusy || string.IsNullOrWhiteSpace(_searchTerm)) return;
+        _isBusy = true;
+        _statusMessage = $"Searching web images for: {_searchTerm}";
+        _manualResults.Clear();
+        _discogsResults.Clear();
+        StateHasChanged();
+
+        try
+        {
+            var apiKey = AppSettings.GetValue(SettingKey.SerpApiKey);
+            if (string.IsNullOrWhiteSpace(apiKey))
+            {
+                _statusMessage = "SerpApi key is not configured (Settings > CoverArt).";
+                return;
+            }
+
+            var serp = new SerpApiHelper();
+            _manualResults = await serp.SearchImagesAsync(apiKey, _searchTerm);
+            _statusMessage = _manualResults.Count == 0 ? "No web image results found." : string.Empty;
+        }
+        catch (Exception ex)
+        {
+            _statusMessage = $"Web image search failed: {ex.Message}";
+        }
+        finally
+        {
+            _isBusy = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task BrowseByArtist()
+    {
+        if (_current is null || _isBusy) return;
+        if (string.IsNullOrWhiteSpace(_searchTerm))
+        {
+            _statusMessage = "Enter an artist name in the search box to browse by.";
+            return;
+        }
+
+        var token = AppSettings.GetValue(SettingKey.DiscogsToken);
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            _statusMessage = "Discogs token is not configured (Settings > CoverArt).";
+            return;
+        }
+
+        _isBusy = true;
+        _statusMessage = $"Browsing Discogs for '{_searchTerm}'...";
+        _discogsResults.Clear();
+        _manualResults.Clear();
+        StateHasChanged();
+
+        try
+        {
+            var discogs = new DiscogsHelper();
+            _discogsResults = await discogs.BrowseByArtistAsync(token, _searchTerm);
+            _statusMessage = _discogsResults.Count == 0
+                ? "No releases found for this artist."
+                : $"{_discogsResults.Count} release(s) found - click one to preview.";
+        }
+        catch (Exception ex)
+        {
+            _statusMessage = $"Browse failed: {ex.Message}";
+        }
+        finally
+        {
+            _isBusy = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void LoadPreview(SerpApiImageResult result)
+    {
+        _previewSrc = result.FullUrl;
+        _previewSerpResult = result;
+        _previewDiscogsRelease = null;
+    }
+
+    private void LoadPreview(DiscogsRelease release)
+    {
+        _previewSrc = release.CoverImageUrl ?? release.ThumbUrl;
+        _previewDiscogsRelease = release;
+        _previewSerpResult = null;
+    }
+
+    private void ClearPreview()
+    {
+        _previewSrc = null;
+        _previewSerpResult = null;
+        _previewDiscogsRelease = null;
+    }
+
+    private async Task CommitPreview()
+    {
+        if (_isBusy || _previewSrc is null) return;
+        _isBusy = true;
+        _statusMessage = "Loading selected image...";
+        StateHasChanged();
+
+        try
+        {
+            byte[]? art = _previewSerpResult is { } serpResult
+                ? await new SerpApiHelper().DownloadImageAsync(serpResult.FullUrl)
+                : _previewDiscogsRelease is { } release && (release.CoverImageUrl ?? release.ThumbUrl) is { } imageUrl
+                    ? await new DiscogsHelper().DownloadImageAsync(imageUrl)
+                    : null;
+
+            if (art is not null)
+            {
+                _stagedImage = art;
+                _stagedMimeType = "image/jpeg";
+                _statusMessage = "Image loaded - click Save to File to embed it.";
+            }
+            else
+            {
+                _statusMessage = "That result has no usable image - pick another.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _statusMessage = $"Failed to load image: {ex.Message}";
+        }
+        finally
+        {
+            ClearPreview();
+            _isBusy = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void SaveToFile()
+    {
+        if (_current is null || _stagedImage is null) return;
+
+        if (FileAndAudioService.SaveCoverArt(_current.FilePath, _stagedImage))
+        {
+            _current.HasCoverArt = true;
+            _current.CoverArtPreview = _stagedImage;
+            _current.CoverArtMimeType = _stagedMimeType;
+            _stagedImage = null;
+            _stagedMimeType = null;
+            _statusMessage = "Saved to file.";
+        }
+        else
+        {
+            _statusMessage = "Failed to save cover art to the file.";
+        }
+    }
+
+    private void SkipToNext()
+    {
+        if (_current is null || _items.Count == 0) return;
+        var currentIndex = _items.IndexOf(_current);
+        var next = _items.Skip(currentIndex + 1).FirstOrDefault() ?? _items.FirstOrDefault(i => i != _current);
+        if (next is not null) SelectItem(next);
+    }
+}
