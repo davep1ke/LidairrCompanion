@@ -12,6 +12,11 @@ namespace LidarrCompanion.Helpers
         // no need to load the image just to know its size.
         public int? Width { get; set; }
         public int? Height { get; set; }
+        // "link" is the webpage the image was found on (not the image URL itself) and "source" is
+        // that page's site name (e.g. "Wikipedia") - the closest thing Google Images results have
+        // to a description, and a real, clickable attribution link.
+        public string? SourceUrl { get; set; }
+        public string? SourceName { get; set; }
     }
 
     // Manual-only fallback image search, used solely when the free MusicBrainz/Cover Art Archive
@@ -52,6 +57,8 @@ namespace LidarrCompanion.Helpers
                     var title = img.TryGetProperty("title", out var ti) ? ti.GetString() : null;
                     var width = img.TryGetProperty("original_width", out var w) && w.ValueKind == JsonValueKind.Number ? w.GetInt32() : (int?)null;
                     var height = img.TryGetProperty("original_height", out var h) && h.ValueKind == JsonValueKind.Number ? h.GetInt32() : (int?)null;
+                    var sourceUrl = img.TryGetProperty("link", out var lk) ? lk.GetString() : null;
+                    var sourceName = img.TryGetProperty("source", out var src) ? src.GetString() : null;
 
                     // "original" can be a non-fetchable "x-raw-image://..." pseudo-URL for some
                     // results (a known quirk of Google's own image data, not a SerpApi bug) -
@@ -78,7 +85,9 @@ namespace LidarrCompanion.Helpers
                         FullUrl = full,
                         Title = title,
                         Width = width,
-                        Height = height
+                        Height = height,
+                        SourceUrl = IsFetchableUrl(sourceUrl) ? sourceUrl : null,
+                        SourceName = sourceName
                     });
                 }
             }

@@ -7,7 +7,11 @@ namespace LidarrCompanion.Helpers
     // A single Discogs search result. ThumbUrl/CoverImageUrl are both null unless the request was
     // authenticated - Discogs deliberately omits image URLs from unauthenticated search responses
     // (confirmed directly against the live API), regardless of the per-minute rate limit.
-    public record DiscogsRelease(long Id, string Title, string? Year, string? ThumbUrl, string? CoverImageUrl);
+    // Description and Url exist specifically so the UI can show something under a selected result
+    // and link back to it - Discogs has no dedicated free-text description field, so Description
+    // is built from country/format/label (the closest real equivalent); Url is the release's own
+    // discogs.com page (the API's "uri" field is only a relative path, not a usable link on its own).
+    public record DiscogsRelease(long Id, string Title, string? Year, string? ThumbUrl, string? CoverImageUrl, string? Description, string? Url);
 
     // Replaces MusicBrainz/Cover Art Archive as the cover-art gate's primary lookup. Discogs'
     // catalog leans heavily into vinyl/promo/remix releases that MusicBrainz's own community
@@ -72,13 +76,24 @@ namespace LidarrCompanion.Helpers
                     var year = item.TryGetProperty("year", out var yearProp) ? yearProp.GetString() : null;
                     var thumb = item.TryGetProperty("thumb", out var thumbProp) ? thumbProp.GetString() : null;
                     var coverImage = item.TryGetProperty("cover_image", out var coverProp) ? coverProp.GetString() : null;
+                    var country = item.TryGetProperty("country", out var countryProp) ? countryProp.GetString() : null;
+                    var uri = item.TryGetProperty("uri", out var uriProp) ? uriProp.GetString() : null;
+                    var formats = ReadStringArray(item, "format");
+                    var labels = ReadStringArray(item, "label");
+
+                    var descriptionParts = new List<string>();
+                    if (!string.IsNullOrWhiteSpace(country)) descriptionParts.Add(country);
+                    if (formats.Count > 0) descriptionParts.Add(string.Join(", ", formats));
+                    if (labels.Count > 0) descriptionParts.Add(string.Join(", ", labels));
 
                     results.Add(new DiscogsRelease(
                         id,
                         string.IsNullOrWhiteSpace(title) ? "(untitled)" : title,
                         year,
                         string.IsNullOrWhiteSpace(thumb) ? null : thumb,
-                        string.IsNullOrWhiteSpace(coverImage) ? null : coverImage));
+                        string.IsNullOrWhiteSpace(coverImage) ? null : coverImage,
+                        descriptionParts.Count > 0 ? string.Join(" · ", descriptionParts) : null,
+                        string.IsNullOrWhiteSpace(uri) ? null : $"https://www.discogs.com{uri}"));
                 }
 
                 Logger.Log($"Discogs search found {results.Count} release(s)", LogSeverity.Verbose, new { Count = results.Count });
@@ -89,6 +104,20 @@ namespace LidarrCompanion.Helpers
             }
 
             return results;
+        }
+
+        private static List<string> ReadStringArray(JsonElement item, string propertyName)
+        {
+            var values = new List<string>();
+            if (item.TryGetProperty(propertyName, out var arr) && arr.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var entry in arr.EnumerateArray())
+                {
+                    var s = entry.GetString();
+                    if (!string.IsNullOrWhiteSpace(s)) values.Add(s);
+                }
+            }
+            return values;
         }
 
         // Query-building extracted so the "which field goes where" choice is directly

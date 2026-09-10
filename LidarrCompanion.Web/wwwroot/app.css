@@ -1201,6 +1201,24 @@ h1:focus {
     font-size: 0.8rem;
 }
 
+.cover-art-preview-description {
+    color: var(--text);
+    font-size: 0.8rem;
+    text-align: center;
+    margin: 0;
+    word-break: break-word;
+}
+
+.cover-art-preview-link {
+    color: #4a90d9;
+    font-size: 0.8rem;
+    text-decoration: none;
+}
+
+.cover-art-preview-link:hover {
+    text-decoration: underline;
+}
+
 .cover-art-preview-hint {
     color: var(--text-muted);
     font-size: 0.75rem;

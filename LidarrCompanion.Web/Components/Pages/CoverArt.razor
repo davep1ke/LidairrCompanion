@@ -115,6 +115,14 @@ else
                                  onload="document.getElementById('cover-art-preview-dims').textContent = this.naturalWidth + ' × ' + this.naturalHeight + ' px'"
                                  onerror="document.getElementById('cover-art-preview-dims').textContent = 'Image failed to load'" />
                             <div id="cover-art-preview-dims" class="cover-art-preview-dims"></div>
+                            @if (!string.IsNullOrWhiteSpace(_previewDescription))
+                            {
+                                <p class="cover-art-preview-description">@_previewDescription</p>
+                            }
+                            @if (_previewSourceUrl is not null)
+                            {
+                                <a href="@_previewSourceUrl" target="_blank" rel="noopener noreferrer" class="cover-art-preview-link">@_previewSourceLabel</a>
+                            }
                             <p class="cover-art-preview-hint">Drag onto the box on the left to use it</p>
                             <div class="cover-art-preview-side-actions">
                                 <button @onclick="CommitPreview" disabled="@_isBusy">Use this image</button>
@@ -158,6 +166,9 @@ else
     private string? _previewSrc;
     private SerpApiImageResult? _previewSerpResult;
     private DiscogsRelease? _previewDiscogsRelease;
+    private string? _previewDescription;
+    private string? _previewSourceUrl;
+    private string? _previewSourceLabel;
 
     private IJSObjectReference? _pasteModule;
     private DotNetObjectReference<CoverArt>? _selfRef;
@@ -355,6 +366,9 @@ else
         _previewSrc = result.FullUrl;
         _previewSerpResult = result;
         _previewDiscogsRelease = null;
+        _previewDescription = result.Title;
+        _previewSourceUrl = result.SourceUrl;
+        _previewSourceLabel = string.IsNullOrWhiteSpace(result.SourceName) ? "View source" : $"View on {result.SourceName}";
     }
 
     private void LoadPreview(DiscogsRelease release)
@@ -362,6 +376,9 @@ else
         _previewSrc = release.CoverImageUrl ?? release.ThumbUrl;
         _previewDiscogsRelease = release;
         _previewSerpResult = null;
+        _previewDescription = release.Description;
+        _previewSourceUrl = release.Url;
+        _previewSourceLabel = "View on Discogs";
     }
 
     private void ClearPreview()
@@ -369,6 +386,9 @@ else
         _previewSrc = null;
         _previewSerpResult = null;
         _previewDiscogsRelease = null;
+        _previewDescription = null;
+        _previewSourceUrl = null;
+        _previewSourceLabel = null;
     }
 
     private async Task CommitPreview()
