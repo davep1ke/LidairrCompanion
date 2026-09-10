@@ -1029,20 +1029,28 @@ h1:focus {
     color: var(--text-muted);
 }
 
+/* The whole page is bounded to the viewport (minus the fixed status+player bars) rather than
+   growing until it needs a page-level scroll - only .cover-art-results-frame scrolls internally.
+   Without this, a long result list pushed the Save/Reset/Skip buttons below the fold, which
+   defeats the point of the frame having its own scrollbar in the first place. */
 .cover-art-page {
     display: flex;
     gap: 1rem;
-    align-items: flex-start;
-    padding-bottom: 5.5rem; /* clear the fixed status+player bars */
+    align-items: stretch;
+    height: calc(100vh - 5.5rem); /* leave room for the fixed status+player bars */
 }
 
 .cover-art-list {
     flex: 0 0 22rem;
     min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
 }
 
 .cover-art-list table {
-    max-height: 32rem;
+    flex: 1 1 auto;
+    min-height: 0;
     display: block;
     overflow-y: auto;
 }
@@ -1050,6 +1058,7 @@ h1:focus {
 .cover-art-detail {
     flex: 1 1 auto;
     min-width: 0;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
@@ -1094,7 +1103,8 @@ h1:focus {
 }
 
 .cover-art-results-frame {
-    max-height: 26rem;
+    flex: 1 1 auto;
+    min-height: 6rem;
     overflow-y: auto;
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 6px;
@@ -1151,6 +1161,11 @@ h1:focus {
     display: flex;
     gap: 1rem;
     align-items: flex-start;
+    flex-shrink: 0; /* keeps its height even while .cover-art-results-frame flexes/shrinks */
+}
+
+.cover-art-info, .cover-art-search, .cover-art-status, .cover-art-actions {
+    flex-shrink: 0;
 }
 
 .cover-art-preview-row .cover-art-preview {
@@ -1212,6 +1227,33 @@ h1:focus {
 .cover-art-abort {
     margin-left: auto;
     color: #f44336;
+}
+
+/* Every button on both the real /cover-art page and the /cover-art-test harness shares this look
+   (both pages render under this same .cover-art-page root) - plain browser-default buttons of
+   wildly different widths (compare "Skip" to "Browse Artist on Discogs") looked inconsistent and
+   unfinished. min-width (not a hard width) sized to the longest real label on the page means every
+   shorter-labeled button renders at that same width without truncating a longer one that shows up
+   later. */
+.cover-art-page button {
+    align-self: flex-start; /* never stretch to fill a flex parent (e.g. the file-list column) */
+    min-width: 9.5rem;
+    padding: 0.45rem 0.9rem;
+    font-size: 0.85rem;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--panel-bg);
+    color: var(--text);
+    cursor: pointer;
+}
+
+.cover-art-page button:hover:not(:disabled) {
+    border-color: #4a90d9;
+}
+
+.cover-art-page button:disabled {
+    opacity: 0.5;
+    cursor: default;
 }
 
 .sift-next li {

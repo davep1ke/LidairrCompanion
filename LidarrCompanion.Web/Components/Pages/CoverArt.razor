@@ -24,7 +24,10 @@ else
             <table class="triage-table">
                 <thead><tr><th></th><th>File</th><th>Destination</th></tr></thead>
                 <tbody>
-                    @foreach (var item in Gate.PendingItems)
+                    @* Display-only ordering (files still missing art first, then alphabetical) -
+                       Gate.PendingItems itself stays in its original order since SkipToNext and
+                       SelectFirstMissingOrFirst below index into it directly. *@
+                    @foreach (var item in Gate.PendingItems.OrderBy(i => i.HasCoverArt).ThenBy(i => i.FileName, StringComparer.OrdinalIgnoreCase))
                     {
                         <tr class="@(item == _current ? "row-selected" : "")" @onclick="() => SelectItem(item)">
                             <td>@(item.HasCoverArt ? "✓" : "")</td>
@@ -45,6 +48,49 @@ else
                     <div><strong>File:</strong> @_current.FileName</div>
                 </div>
 
+                <div class="cover-art-search">
+                    <input @bind="_searchTerm" @bind:event="oninput" placeholder="Search..." />
+                    <button @onclick="SearchDiscogs" disabled="@_isBusy">Search Discogs</button>
+                    <button @onclick="SearchManual" disabled="@_isBusy">Search Web Images</button>
+                    <button @onclick="BrowseByArtist" disabled="@_isBusy">Browse Artist on Discogs</button>
+                    <label class="cover-art-autosearch">
+                        <input type="checkbox" @bind="_autoSearchEnabled" /> Auto-search
+                    </label>
+                </div>
+
+                @* Results scroll in their own fixed-height frame, with the cover art box and the
+                   selected-result preview always visible below - so paging through a long result
+                   list never pushes the Save/Reset/Skip/Complete buttons off screen. *@
+                <div class="cover-art-results-frame">
+                    @if (_manualResults.Count > 0)
+                    {
+                        <div class="cover-art-results">
+                            @foreach (var r in _manualResults)
+                            {
+                                <div class="cover-art-browse-item" @onclick="() => LoadPreview(r)">
+                                    <img src="@r.ThumbnailUrl" title="@r.Title" alt="@r.Title" class="cover-art-result-thumb" />
+                                    <span class="cover-art-browse-title">@(r.Width is { } w && r.Height is { } h ? $"{w} × {h}" : string.Empty)</span>
+                                </div>
+                            }
+                        </div>
+                    }
+
+                    @if (_discogsResults.Count > 0)
+                    {
+                        <div class="cover-art-results">
+                            @foreach (var release in _discogsResults)
+                            {
+                                <div class="cover-art-browse-item" @onclick="() => LoadPreview(release)">
+                                    <img src="@(release.ThumbUrl ?? release.CoverImageUrl)"
+                                         title="@release.Title" alt="@release.Title" class="cover-art-result-thumb"
+                                         onerror="this.style.visibility='hidden'" />
+                                    <span class="cover-art-browse-title">@release.Title@(release.Year is { Length: > 0 } y ? $" ({y})" : "")</span>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+
                 <div class="cover-art-preview-row">
                     <div class="cover-art-preview" @ondragover="@(() => {})" @ondragover:preventDefault="true" @ondrop="CommitPreview" @ondrop:preventDefault="true">
                         @if (StagedImageDataUri is not null)
@@ -57,7 +103,7 @@ else
                         }
                         else
                         {
-                            <div class="cover-art-drop-hint">No cover art yet. Search below, then drag a result here (or paste one with Ctrl+V).</div>
+                            <div class="cover-art-drop-hint">No cover art yet. Search above, then drag a result here (or paste one with Ctrl+V).</div>
                         }
                     </div>
 
@@ -78,42 +124,11 @@ else
                     }
                 </div>
 
-                <div class="cover-art-search">
-                    <input @bind="_searchTerm" @bind:event="oninput" placeholder="Search..." />
-                    <button @onclick="SearchDiscogs" disabled="@_isBusy">Search Discogs</button>
-                    <button @onclick="SearchManual" disabled="@_isBusy">Search Web Images</button>
-                    <button @onclick="BrowseByArtist" disabled="@_isBusy">Browse Artist on Discogs</button>
-                </div>
-
-                @if (_manualResults.Count > 0)
-                {
-                    <div class="cover-art-results">
-                        @foreach (var r in _manualResults)
-                        {
-                            <img src="@r.ThumbnailUrl" title="@r.Title" alt="@r.Title" class="cover-art-result-thumb" @onclick="() => LoadPreview(r)" />
-                        }
-                    </div>
-                }
-
-                @if (_discogsResults.Count > 0)
-                {
-                    <div class="cover-art-results">
-                        @foreach (var release in _discogsResults)
-                        {
-                            <div class="cover-art-browse-item" @onclick="() => LoadPreview(release)">
-                                <img src="@(release.ThumbUrl ?? release.CoverImageUrl)"
-                                     title="@release.Title" alt="@release.Title" class="cover-art-result-thumb"
-                                     onerror="this.style.visibility='hidden'" />
-                                <span class="cover-art-browse-title">@release.Title@(release.Year is { Length: > 0 } y ? $" ({y})" : "")</span>
-                            </div>
-                        }
-                    </div>
-                }
-
                 <p class="cover-art-status">@_statusMessage</p>
 
                 <div class="cover-art-actions">
                     <button @onclick="SaveAndNext" disabled="@(_stagedImage is null || _isBusy)">@(_isLastMissing ? "Save & Finish" : "Save & Next")</button>
+                    <button @onclick="ResetImage" disabled="@(_stagedImage is null || _isBusy)">Reset</button>
                     <button @onclick="SkipToNext" disabled="@_isBusy">Skip</button>
                     <button @onclick="Complete" disabled="@_isBusy">Complete</button>
                     <button @onclick="AbortImport" disabled="@_isBusy" class="cover-art-abort">Abort Import</button>
@@ -128,6 +143,7 @@ else
     private string _searchTerm = string.Empty;
     private string _statusMessage = string.Empty;
     private bool _isBusy;
+    private bool _autoSearchEnabled;
     private byte[]? _stagedImage;
     private string? _stagedMimeType;
     private List<SerpApiImageResult> _manualResults = new();
@@ -201,6 +217,8 @@ else
         ClearPreview();
         _statusMessage = string.Empty;
         _searchTerm = BuildSearchQuery(item);
+
+        if (_autoSearchEnabled) _ = SearchManual();
     }
 
     // Artist/album text search (used by the Discogs tiers) is separate and stays structured -
@@ -420,6 +438,16 @@ else
         {
             _statusMessage = $"Failed to save cover art: {ex.Message}";
         }
+    }
+
+    // Discards the staged (not-yet-saved) image, reverting the preview back to whatever was
+    // already embedded in the file - nothing on disk has changed yet at this point, so this is
+    // just clearing the in-memory override.
+    private void ResetImage()
+    {
+        _stagedImage = null;
+        _stagedMimeType = null;
+        _statusMessage = "Reset to original cover art.";
     }
 
     private void SkipToNext()
