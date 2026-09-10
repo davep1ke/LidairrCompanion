@@ -54,7 +54,7 @@ else
                     <button @onclick="SearchManual" disabled="@_isBusy">Search Web Images</button>
                     <button @onclick="BrowseByArtist" disabled="@_isBusy">Browse Artist on Discogs</button>
                     <label class="cover-art-autosearch">
-                        <input type="checkbox" @bind="_autoSearchEnabled" /> Auto-search
+                        <input type="checkbox" @bind="_autoSearchEnabled" @bind:after="OnAutoSearchChanged" /> Auto-search
                     </label>
                 </div>
 
@@ -151,7 +151,9 @@ else
     private string _searchTerm = string.Empty;
     private string _statusMessage = string.Empty;
     private bool _isBusy;
-    private bool _autoSearchEnabled;
+    // Persisted (Settings > CoverArt) rather than session-only, so the preference sticks across
+    // visits instead of resetting to off every time this page loads.
+    private bool _autoSearchEnabled = AppSettings.Current.GetTyped<bool>(SettingKey.AutoSearchCoverArt);
     private byte[]? _stagedImage;
     private string? _stagedMimeType;
     private List<SerpApiImageResult> _manualResults = new();
@@ -468,6 +470,12 @@ else
         _stagedImage = null;
         _stagedMimeType = null;
         _statusMessage = "Reset to original cover art.";
+    }
+
+    private void OnAutoSearchChanged()
+    {
+        AppSettings.Current.Settings[SettingKey.AutoSearchCoverArt.ToString()] = _autoSearchEnabled;
+        AppSettings.Save();
     }
 
     private void SkipToNext()

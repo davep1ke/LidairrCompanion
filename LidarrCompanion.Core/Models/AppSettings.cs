@@ -184,6 +184,8 @@ namespace LidarrCompanion.Models
         SerpApiKey,
         [Setting(typeof(string), "Discogs personal access token for cover-art lookup (generate one free at discogs.com/settings/developers)", "CoverArt")]
         DiscogsToken,
+        [Setting(typeof(bool), "Automatically run the web-image search as soon as a file is selected on the cover-art page", false, "CoverArt")]
+        AutoSearchCoverArt,
     }
 
 
