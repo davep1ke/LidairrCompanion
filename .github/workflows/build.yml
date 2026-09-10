@@ -30,8 +30,35 @@ jobs:
 
   docker-build:
     runs-on: ubuntu-latest
+    # Needed to push to ghcr.io using the repo's own built-in GITHUB_TOKEN - no separate secret
+    # to create or rotate. contents:read is the default already implied, listed explicitly since
+    # packages:write on its own would otherwise imply the (undesired) default permission set.
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
       - name: Build Docker image
         run: docker build -t lidarrcompanion:ci .
+
+      # Only push on an actual commit landing on master, never for a pull_request build (that
+      # would let an unreviewed branch overwrite the "latest" image anyone pulling from this
+      # registry gets).
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image to GHCR
+        if: github.event_name == 'push'
+        run: |
+          IMAGE=ghcr.io/${{ github.repository_owner }}/lidairrcompanion
+          IMAGE=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
+          docker tag lidarrcompanion:ci "$IMAGE:latest"
+          docker tag lidarrcompanion:ci "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
+          docker push "$IMAGE:${{ github.sha }}"

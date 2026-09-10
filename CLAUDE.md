@@ -281,6 +281,16 @@ machine (image build, container start, settings load correctly, host-mounted pat
 *and* writable from inside the container, login sessions and settings both survive a container
 restart) before ever touching the real TrueNAS target.
 
+- **CI publishes the image to GHCR on every push to `master`** (`.github/workflows/build.yml`'s
+  `docker-build` job) — tagged both `:latest` and `:<commit-sha>`, using the workflow's own
+  built-in `GITHUB_TOKEN` via `docker/login-action`, so no separate registry credential needs
+  creating or rotating. Gated to `github.event_name == 'push'` specifically so a pull-request
+  build (which runs the same job to validate the Dockerfile still builds) never overwrites
+  `:latest` with unreviewed code. **One manual, one-time step this can't do via CI**: a package
+  first published via `GITHUB_TOKEN` is private by default — pulling it from the TrueNAS box (or
+  anywhere outside this repo's own Actions runs) needs the package's visibility changed to public
+  from the repo's Packages tab on GitHub, or a PAT configured on the pulling side otherwise.
+
 - **Build context is `LidarrCompanion.Core` + `LidarrCompanion.Web` only** — the old WPF project,
   its root-level `Helpers`/`Models`/`Services`, and `LidarrCompanion.Core.Tests` are excluded via
   `.dockerignore`, both for build-context size and so the WPF project's presence can never
