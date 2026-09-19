@@ -33,6 +33,13 @@ namespace LidarrCompanion.Helpers
             return -1;
         }
 
+        // Has the user made a decision about this file? An auto-generated Unlink (see
+        // ProposedAction.IsAutoUnlink) is only a default for the leftovers of a release, so it does
+        // NOT count - otherwise matching one track marks every sibling "handled" and selection
+        // skips straight past the rest of the release to the next artist.
+        public static bool IsUserHandled(bool isAssigned, bool hasProposal, bool proposalIsAutoUnlink) =>
+            isAssigned || (hasProposal && !proposalIsAutoUnlink);
+
         private static int IndexOf<T>(IReadOnlyList<T> items, T item) where T : class
         {
             for (var i = 0; i < items.Count; i++)

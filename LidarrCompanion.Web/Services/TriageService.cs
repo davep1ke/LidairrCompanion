@@ -674,7 +674,8 @@ namespace LidarrCompanion.Web.Services
                     Path = file.Path,
                     OriginalFileName = Path.GetFileName(file.Path) ?? string.Empty,
                     OriginalRelease = originalRelease,
-                    Quality = file.Quality
+                    Quality = file.Quality,
+                    IsAutoUnlink = true
                 };
 
                 ProposedActions.Add(unlinkProposal);
@@ -682,8 +683,14 @@ namespace LidarrCompanion.Web.Services
             }
         }
 
-        private bool IsFileHandled(LidarrManualImportFile f) =>
-            f.ProposedActionType.HasValue || AssignedFileIds.Contains(f.Id);
+        private bool IsFileHandled(LidarrManualImportFile f)
+        {
+            var proposal = ProposedActions.FirstOrDefault(p => p.FileId == f.Id);
+            return FileSelection.IsUserHandled(
+                AssignedFileIds.Contains(f.Id),
+                proposal is not null || f.ProposedActionType.HasValue,
+                proposal?.IsAutoUnlink == true);
+        }
 
         // After Mark Match / Unlink / Delete / Move: jump to the next file that still needs a
         // decision, so working through a release is a run of key presses with no clicking between.
@@ -832,6 +839,7 @@ namespace LidarrCompanion.Web.Services
 
             var summary = new ImportSummary(0, 0, 0, 0);
             bool paused = false;
+            string? backupFailure = null;
 
             await RunBusyAsync("Importing files to Lidarr...", async () =>
             {
@@ -844,6 +852,7 @@ namespace LidarrCompanion.Web.Services
                     // onto the ProposedAction instances (actionsSnapshot shares references with
                     // ProposedActions) - just apply the usual cleanup pass and report everything
                     // as failed (nothing got far enough to import/move/copy).
+                    backupFailure = actionsSnapshot.Select(a => a.ErrorMessage).FirstOrDefault(m => !string.IsNullOrWhiteSpace(m));
                     var failedCount = ApplyImportResultsToProposedActions();
                     summary = new ImportSummary(0, 0, 0, failedCount);
                     return;
@@ -872,7 +881,9 @@ namespace LidarrCompanion.Web.Services
 
             // When paused, the caller navigates straight to /cover-art - the page itself is the
             // message, so nothing is posted to the status bar.
-            if (!paused && summary.HasAnyResult)
+            if (backupFailure is not null)
+                _status.ShowError(BackupFailureHelp.Describe(backupFailure));
+            else if (!paused && summary.HasAnyResult)
                 PostImportSummary(summary);
 
             return summary;

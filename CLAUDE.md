@@ -210,9 +210,15 @@ implementation and produced ~130 identical background-job failures before being 
   its await, so overlapping loads can't leave duplicate rows. Don't reintroduce `RunBusyAsync`
   around anything the user might want to click past.
 - **Auto-advance** (`TriageService.AdvanceAfterActionAsync`, called by the page after Mark Match /
-  Unlink / Delete / Move): selects the next file that still has no decision (next after the one
-  acted on, else the first skipped one), re-sorts the tracks list for it; when the whole release is
-  handled it moves on to the **next queue record** and selects its first file. The page then
+  Unlink / Delete / Move): selects the next file that still has no *user* decision (next after the
+  one acted on, else the first skipped one), re-sorts the tracks list for it; only when every file
+  in the release has a user decision does it move on to the **next queue record**.
+  **Auto-generated sibling Unlinks don't count as decisions**: Mark Match marks every other file in
+  the matched file's folder as Unlink by default (`MarkOtherFilesForUnlink`, ported from WPF), and
+  those proposals carry `ProposedAction.IsAutoUnlink`. Counting them as "handled" made matching one
+  track of a folder release jump straight to the next artist (real complaint); now you land on the
+  next track, and matching/deleting it replaces its auto-Unlink (`CreateManualAssignment` /
+  `CreateProposal` remove the file's existing proposal). Rule is `FileSelection.IsUserHandled`. The page then
   scrolls the tracks list to top (`_scrollAfterRender` → `scrollToTop` JS after the render — must
   be after, or the re-sorted rows aren't in the DOM yet). Pure index maths is
   `Core/Helpers/FileSelection.NextUnhandledIndex` (tested).
@@ -457,7 +463,15 @@ restart) before ever touching the real TrueNAS target.
   starts the container before the share is mounted, so the container binds an empty directory and
   every file is "not found" (backup step fails first). Even after the host remounts, the container
   keeps the stale empty view — `docker compose restart` fixes it. (`/mnt/Music` on the dev machine
-  is exactly this case.)
+  is exactly this case.) Hit again in practice: the log showed `File not found:
+  '/mnt/Music/1ToClean/...'` on every retry while the host was fine; `docker exec <c> mount | grep
+  Music` showed the *container's own ext4* instead of cifs. **A restart loses all in-memory state
+  (proposed actions, selection)** — nothing about proposals is persisted, so redo the matches after.
+  Rebuilding/recreating the container (`docker compose up -d`) re-binds too, but binds whatever the
+  host has mounted *at that moment* — check `mount | grep cifs` on the host first.
+  `BackupFailureHelp` (Core) appends this hint to the status-bar error when a backup fails with a
+  "not found"; propagation flags (`rslave`) don't help because the share is mounted *over* the
+  bound directory rather than inside it.
 - **`/cover-art-test`** is a hidden dev harness (no nav link, route still live) working against
   copies in `/mnt/Music/.cover-art-test` (`TestFolder` constant) with no dependency on the import
   pipeline. Its search/preview/drag code is a *parallel copy* of `CoverArt.razor`'s, not shared —
