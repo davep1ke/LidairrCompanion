@@ -514,6 +514,26 @@ restart) before ever touching the real TrueNAS target.
   Propagation flags (`rslave`) don't help because the share is mounted *over* the bound directory
   rather than inside it. (An in-app hint for this was added and then removed at the owner's
   request — see the no-hints standing instruction.)
+- **The dev machine's `/mnt/Music`/`/mnt/lidarr-backup` CIFS mounts are `soft` by default, and this
+  bit real file-recovery work**: a plain `shutil.move()`/`os.rename()` across two folders on that
+  share could return success with zero exception while the file hadn't actually moved yet
+  (confirmed directly — a batch "move" reported 595/595 succeeded, but only 54 had genuinely landed;
+  the rest were still sitting untouched at the source, silently, with no error). This is NOT a
+  caching artifact you can read your way past — `os.path.exists()`/`os.listdir()` calls made in a
+  tight loop against this mount are themselves unreliable moments after a write; a `sync` +
+  short delay + one fresh whole-directory listing (not per-file existence checks) is what actually
+  gives a trustworthy read. **Explicitly `mount -o hard` does not fix this by itself** — remounting
+  with `hard` alone still showed `soft` in `/proc/mounts` afterward, because cifs.ko was reusing the
+  *existing* SMB session/connection to the server (`/proc/fs/cifs/DebugData` showed a shared
+  `ConnectionId` across both mounts) rather than negotiating a fresh one, and a bare `umount`+`mount`
+  doesn't tear that shared connection down. Confirmed straight from the kernel source
+  (`cifs_show_options` in `fs/smb/client/cifsfs.c`): the "soft"/"hard" shown in `/proc/mounts` is a
+  live read of `tcon->retry`, not a stale label, so it really was still soft. The fix is
+  `nosharesock` on the mount, which forces a genuinely separate connection (confirmed via a new,
+  distinct `ConnectionId` in `DebugData`) — only then did `hard` actually take effect. For any bulk
+  file operation against these shares: move in batches, then verify with `sync` + delay + one fresh
+  listing per directory, and retry only what's still unconfirmed, regardless of what `hard`/`soft`
+  currently shows.
 - **`/cover-art-test`** is a hidden dev harness (no nav link, route still live) working against
   copies in `/mnt/Music/.cover-art-test` (`TestFolder` constant) with no dependency on the import
   pipeline. Its search/preview/drag code is a *parallel copy* of `CoverArt.razor`'s, not shared —
