@@ -12,10 +12,24 @@ const altShortcutKeys = new Set(['1', 'a', 'm', 'p', 'x', 'u']);
 const bareShortcutKeys = new Set(['m', 'x', 'u']);
 let altHandler = null;
 
+// Only elements you actually type text into should swallow bare shortcut keys. Checkboxes, radios
+// and buttons are <input>/<button> too, but a checkbox holds focus right after you tick it - which
+// is exactly when M/X/U are wanted (multi-select, then act) - so they must not count.
+const nonTextInputTypes = new Set(['checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file', 'image']);
+
 function isTypingTarget(el) {
     if (!el) return false;
     const tag = el.tagName;
-    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable === true;
+    if (tag === 'INPUT') return !nonTextInputTypes.has((el.type || 'text').toLowerCase());
+    return tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable === true;
+}
+
+// Alt+<letter> is matched on the physical key (e.code) - with Alt held, e.key can be a different
+// character entirely (macOS turns Alt+M into 'µ'), so matching on e.key made Alt shortcuts fail there.
+function altKeyName(e) {
+    if (e.code && e.code.startsWith('Key')) return e.code.slice(3).toLowerCase();
+    if (e.code && e.code.startsWith('Digit')) return e.code.slice(5);
+    return e.key.toLowerCase();
 }
 
 export function register(dotNetRef) {
@@ -23,12 +37,14 @@ export function register(dotNetRef) {
 
     altHandler = (e) => {
         if (e.ctrlKey || e.metaKey) return;
-        const key = e.key.toLowerCase();
 
+        let key;
         if (e.altKey) {
+            key = altKeyName(e);
             if (!altShortcutKeys.has(key)) return;
         } else {
             // A held-down key would otherwise fire the action repeatedly - one press, one action.
+            key = e.key.toLowerCase();
             if (e.repeat || !bareShortcutKeys.has(key) || isTypingTarget(document.activeElement)) return;
         }
 

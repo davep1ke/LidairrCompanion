@@ -84,6 +84,10 @@
                 <table class="triage-table">
                     <thead><tr><th></th><th>Name</th><th>Path</th></tr></thead>
                     <tbody>
+                        @if (Triage.IsLoadingSelection && Triage.ManualImportFiles.Count == 0)
+                        {
+                            <tr><td colspan="3" class="pending-note">⏳ Loading files...</td></tr>
+                        }
                         @foreach (var file in Triage.ManualImportFiles)
                         {
                             <tr class="@(file == Triage.SelectedFile ? "row-selected" : "")"
@@ -109,6 +113,10 @@
                         @if (Triage.PendingArtistMessage(Triage.SelectedQueueRecord?.MatchedArtist) is { } pendingMessage)
                         {
                             <tr><td colspan="5" class="pending-note">⏳ @pendingMessage You can carry on with another release meanwhile.</td></tr>
+                        }
+                        @if (Triage.IsLoadingSelection && Triage.ArtistReleaseTracks.Count == 0 && Triage.PendingArtistMessage(Triage.SelectedQueueRecord?.MatchedArtist) is null)
+                        {
+                            <tr><td colspan="5" class="pending-note">⏳ Loading releases...</td></tr>
                         }
                         @foreach (var track in Triage.ArtistReleaseTracks)
                         {

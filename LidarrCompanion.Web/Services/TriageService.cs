@@ -226,19 +226,39 @@ namespace LidarrCompanion.Web.Services
             }
         }
 
-        public Task OnQueueRecordSelectedAsync(LidarrQueueRecord? record) => RunBusyAsync("Loading files for selected release...", async () =>
+        // Bumped on every record selection. Loads capture it and drop their result if it has moved
+        // on, so clicking through several releases quickly can never leave an earlier (slower)
+        // release's files or tracks on screen - the last click always wins.
+        private int _selectionVersion;
+
+        // True from a record being selected until its files and artist tracks have arrived. Shown
+        // as "Loading..." in the lists; deliberately NOT the global busy lock (see below).
+        public bool IsLoadingSelection { get; private set; }
+
+        // Deliberately does not take the global busy lock any more. The old version wrapped this in
+        // RunBusyAsync, which greys out and disables the entire page - and a live Lidarr filesystem
+        // scan for an uncached release (slow whenever Lidarr is busy, e.g. adding an artist) meant
+        // the user couldn't click on to the next release until it finished. Now the record is
+        // highlighted and the lists cleared immediately, loading continues in the background of the
+        // page, and clicking another release simply supersedes it.
+        public async Task OnQueueRecordSelectedAsync(LidarrQueueRecord? record)
         {
+            var version = Interlocked.Increment(ref _selectionVersion);
+
             SelectedQueueRecord = record;
             SelectedFile = null;
+            SelectedTrack = null;
             CheckedFileIds.Clear();
+            ManualImportFiles.Clear();
+            ArtistReleaseTracks.Clear();
 
             if (record == null)
             {
-                ManualImportFiles.Clear();
-                ArtistReleaseTracks.Clear();
+                IsLoadingSelection = false;
                 return;
             }
 
+            IsLoadingSelection = true;
             try
             {
                 // Usually already warm - PrefetchService fetches every queue record's files in
@@ -246,8 +266,8 @@ namespace LidarrCompanion.Web.Services
                 // the background worker hasn't reached it yet) this fetches live and caches the
                 // result, same as before.
                 var files = await _prefetch.GetOrFetchQueueRecordFilesAsync(record);
+                if (version != _selectionVersion) return;
 
-                ManualImportFiles.Clear();
                 foreach (var file in files)
                     ManualImportFiles.Add(file.Clone());
 
@@ -259,37 +279,41 @@ namespace LidarrCompanion.Web.Services
                 }
 
                 if (!string.IsNullOrWhiteSpace(record.MatchedArtist))
-                {
-                    await LoadArtistReleasesAsync(record.MatchedArtist);
-                }
-                else
-                {
-                    ArtistReleaseTracks.Clear();
-                }
+                    await LoadArtistReleasesAsync(record.MatchedArtist, version);
             }
             catch (Exception ex)
             {
-                _status.ShowError($"Failed to load files: {ex.Message}");
+                if (version == _selectionVersion)
+                    _status.ShowError($"Failed to load files: {ex.Message}");
             }
-        });
+            finally
+            {
+                if (version == _selectionVersion)
+                    IsLoadingSelection = false;
+            }
+        }
 
-        public async Task LoadArtistReleasesAsync(string artistName)
+        // selectionVersion: when given, the result is discarded if the selected record changed while
+        // the tracks were being fetched. The collection is only touched after the await (cleared and
+        // refilled in one synchronous step), so two overlapping loads can't interleave and leave
+        // duplicated rows.
+        public async Task LoadArtistReleasesAsync(string artistName, int? selectionVersion = null)
         {
-            // Cleared up front so a record whose artist can't be found (or is still being added to
-            // Lidarr) never keeps showing the previous record's tracks.
-            ArtistReleaseTracks.Clear();
-
-            if (Artists.Count == 0) return;
-
             var artist = Artists.FirstOrDefault(a => MatchingService.Normalize(a.ArtistName) == MatchingService.Normalize(artistName));
-            if (artist == null) return;
+            if (artist == null)
+            {
+                ArtistReleaseTracks.Clear();
+                return;
+            }
 
             try
             {
                 // Same cache-or-fetch as above - warm whenever AutoMatch/manual match already
                 // triggered a background prefetch for this artist.
                 var tracks = await _prefetch.GetOrFetchArtistTracksAsync(artist);
+                if (selectionVersion.HasValue && selectionVersion.Value != _selectionVersion) return;
 
+                ArtistReleaseTracks.Clear();
                 foreach (var track in tracks)
                 {
                     var clone = track.Clone();
@@ -437,7 +461,7 @@ namespace LidarrCompanion.Web.Services
             if (!string.Equals(MatchingService.Normalize(SelectedQueueRecord.MatchedArtist), MatchingService.Normalize(artistName), StringComparison.OrdinalIgnoreCase))
                 return;
 
-            await LoadArtistReleasesAsync(artistName);
+            await LoadArtistReleasesAsync(artistName, _selectionVersion);
         }
 
         #endregion
@@ -687,10 +711,15 @@ namespace LidarrCompanion.Web.Services
             var recordIndex = SelectedQueueRecord is null ? -1 : QueueRecords.IndexOf(SelectedQueueRecord);
             if (recordIndex >= 0 && recordIndex < QueueRecords.Count - 1)
             {
-                await OnQueueRecordSelectedAsync(QueueRecords[recordIndex + 1]);
+                var nextRecord = QueueRecords[recordIndex + 1];
+                await OnQueueRecordSelectedAsync(nextRecord);
 
-                SelectedFile = ManualImportFiles.FirstOrDefault(f => !IsFileHandled(f));
-                ApplySort(SortMode);
+                // The user may have clicked a different release while that loaded; leave theirs alone.
+                if (SelectedQueueRecord == nextRecord)
+                {
+                    SelectedFile = ManualImportFiles.FirstOrDefault(f => !IsFileHandled(f));
+                    ApplySort(SortMode);
+                }
                 return true;
             }
 

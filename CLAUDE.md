@@ -193,9 +193,22 @@ implementation and produced ~130 identical background-job failures before being 
 ### Import page: keyboard flow, auto-advance, multi-select
 
 - **Shortcuts**: `M` (Mark Match), `X` (Delete), `U` (Unlink) work bare *and* as Alt+key; Alt+1
-  Refresh, Alt+A Match Artist, Alt+P play/stop. Bare keys are ignored while focus is in an
-  input/textarea/select/contenteditable and on key-repeat (`keyboardShortcuts.js`), and
-  `Import.OnShortcut` ignores everything while the page is busy or the match dialog is open.
+  Refresh, Alt+A Match Artist, Alt+P play/stop. Bare keys are ignored on key-repeat and while focus
+  is in a *text-entry* field (`isTypingTarget` in `keyboardShortcuts.js`) — **not** for
+  checkboxes/radios/buttons: a checkbox keeps focus right after you tick it for multi-select, and
+  treating it as "typing" silently killed M/X/U at exactly the moment they're wanted (real bug).
+  Alt combos match the physical key (`e.code`), since `e.key` differs under Alt on some
+  platforms/layouts (macOS Alt+M = 'µ'). `Import.OnShortcut` ignores everything while the page is
+  busy or the match dialog is open.
+- **Global page lock is now minimal.** `.triage-page.busy` (opacity + `pointer-events:none`, driven
+  by `StatusService.IsBusy`) only applies to Refresh, AI Match and Process Actions/import.
+  **Selecting a release does not lock**: `OnQueueRecordSelectedAsync` highlights the record and
+  clears the lists at once, shows "Loading files..." / "Loading releases..." rows
+  (`IsLoadingSelection`), and a `_selectionVersion` counter makes the last click win if loads
+  overlap (a slow Lidarr filesystem scan for an uncached release used to freeze the whole page).
+  `LoadArtistReleasesAsync` clears+refills the tracks collection in one synchronous step *after*
+  its await, so overlapping loads can't leave duplicate rows. Don't reintroduce `RunBusyAsync`
+  around anything the user might want to click past.
 - **Auto-advance** (`TriageService.AdvanceAfterActionAsync`, called by the page after Mark Match /
   Unlink / Delete / Move): selects the next file that still has no decision (next after the one
   acted on, else the first skipped one), re-sorts the tracks list for it; when the whole release is
@@ -456,6 +469,15 @@ restart) before ever touching the real TrueNAS target.
   certs — this app is meant to be reached over plain HTTP on a trusted LAN.
 
 **Dev-server gotchas when live-testing** (each cost time):
+- **`http://127.0.0.1:5299` is the Docker container, not the working tree.** It runs whatever image
+  `docker compose build` last produced; code changes are invisible there until
+  `docker compose build && docker compose up -d` (settings/login keys persist in `./docker-data`).
+  "I don't see any changes" almost always means this — check with
+  `docker exec lidarrcompanion grep -c <some-new-string> /app/wwwroot/js/keyboardShortcuts.js`
+  or `docker ps` (RunningFor). Live-test on 5390 with the isolated data dir below instead.
+- Singleton state (`TriageService` etc.) survives across test runs within one dev-server process, so
+  a script that dies half-way leaves proposals/selection behind and the next run's numbers are
+  meaningless — restart the server before every scripted run.
 - Run against an isolated data dir so the real `LidarrCompanion.Web/data/appsettings.json` is never
   touched: copy it elsewhere, drop `AdminPasswordHash` (the login page then offers "set password"),
   and start with `DataDirectory=<dir> dotnet run --no-build --urls http://127.0.0.1:5390`. Port 5299
