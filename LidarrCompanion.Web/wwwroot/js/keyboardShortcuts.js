@@ -5,11 +5,11 @@
 // kept as separate functions/listeners to match that each page's shortcuts are only meaningful
 // while that page is showing.
 
-// Triage screen. Every key works as Alt+<key>; m/x/u (Match / delete / Unlink - the three
-// per-file actions used constantly while working through a release) also work bare, as long as
+// Triage screen. Every key works as Alt+<key>; a/m/x/u (Match Artist / Mark Match / delete / Unlink - the
+// actions used constantly while working through a release) also work bare, as long as
 // focus isn't in something you type into.
 const altShortcutKeys = new Set(['1', 'a', 'm', 'p', 'x', 'u']);
-const bareShortcutKeys = new Set(['m', 'x', 'u']);
+const bareShortcutKeys = new Set(['a', 'm', 'x', 'u']);
 let altHandler = null;
 
 // Only elements you actually type text into should swallow bare shortcut keys. Checkboxes, radios

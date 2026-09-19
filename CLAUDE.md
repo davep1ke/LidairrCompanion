@@ -195,8 +195,9 @@ implementation and produced ~130 identical background-job failures before being 
 
 ### Import page: keyboard flow, auto-advance, multi-select
 
-- **Shortcuts**: `M` (Mark Match), `X` (Delete), `U` (Unlink) work bare *and* as Alt+key; Alt+1
-  Refresh, Alt+A Match Artist, Alt+P play/stop. Bare keys are ignored on key-repeat and while focus
+- **Shortcuts**: `A` (Match Artist), `M` (Mark Match), `X` (Delete), `U` (Unlink) work bare *and*
+  as Alt+key; Alt+1 Refresh, Alt+P play/stop. The Match Artist dialog focuses its search box with
+  the text selected on open (`dialogHelpers.js`). Bare keys are ignored on key-repeat and while focus
   is in a *text-entry* field (`isTypingTarget` in `keyboardShortcuts.js`) — **not** for
   checkboxes/radios/buttons: a checkbox keeps focus right after you tick it for multi-select, and
   treating it as "typing" silently killed M/X/U at exactly the moment they're wanted (real bug).
