@@ -793,6 +793,12 @@ h1:focus {
     user-select: none;
 }
 
+/* File with no action in a release that is about to be imported: it will be auto-unlinked. */
+.triage-files .triage-table tr.will-unlink td:not(:first-child) {
+    font-style: italic;
+    opacity: 0.65;
+}
+
 .pending-indicator {
     margin-left: 0.4rem;
     animation: pending-pulse 1.4s ease-in-out infinite;

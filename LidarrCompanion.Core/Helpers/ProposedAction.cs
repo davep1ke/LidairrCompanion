@@ -41,10 +41,9 @@ namespace LidarrCompanion.Helpers
         private string _errorMessage = string.Empty;
         public string ErrorMessage { get => _errorMessage; set { if (_errorMessage != value) { _errorMessage = value; OnPropertyChanged(nameof(ErrorMessage)); OnPropertyChanged(nameof(IsImportFailed)); } } }
 
-        // True for the Unlink proposals Mark Match generates automatically for the matched file's
-        // siblings. They're a default the user can still override (by matching/deleting that file),
-        // so they must not count as a user decision when working out which file to select next.
-        public bool IsAutoUnlink { get; set; }
+        // True for Unlink proposals added automatically at processing time for files the user left
+        // without any action (see ImplicitUnlink). They're regenerated on every processing run.
+        public bool IsImplicitUnlink { get; set; }
 
         public bool IsImportFailed => !string.IsNullOrWhiteSpace(_errorMessage) || string.Equals(_importStatus, "Failed", StringComparison.OrdinalIgnoreCase);
 

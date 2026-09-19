@@ -210,18 +210,26 @@ implementation and produced ~130 identical background-job failures before being 
   its await, so overlapping loads can't leave duplicate rows. Don't reintroduce `RunBusyAsync`
   around anything the user might want to click past.
 - **Auto-advance** (`TriageService.AdvanceAfterActionAsync`, called by the page after Mark Match /
-  Unlink / Delete / Move): selects the next file that still has no *user* decision (next after the
-  one acted on, else the first skipped one), re-sorts the tracks list for it; only when every file
-  in the release has a user decision does it move on to the **next queue record**.
-  **Auto-generated sibling Unlinks don't count as decisions**: Mark Match marks every other file in
-  the matched file's folder as Unlink by default (`MarkOtherFilesForUnlink`, ported from WPF), and
-  those proposals carry `ProposedAction.IsAutoUnlink`. Counting them as "handled" made matching one
-  track of a folder release jump straight to the next artist (real complaint); now you land on the
-  next track, and matching/deleting it replaces its auto-Unlink (`CreateManualAssignment` /
-  `CreateProposal` remove the file's existing proposal). Rule is `FileSelection.IsUserHandled`. The page then
-  scrolls the tracks list to top (`_scrollAfterRender` → `scrollToTop` JS after the render — must
-  be after, or the re-sorted rows aren't in the DOM yet). Pure index maths is
+  Unlink / Delete / Move): selects the next file that still has no action (next after the one acted
+  on, else the first skipped one), re-sorts the tracks list for it; only when every file in the
+  release has an action does it move on to the **next queue record**. (Mark Match used to
+  auto-create Unlink rows for the matched file's folder siblings, which made a match jump straight
+  to the next artist — removed; see the next bullet.) Pure index maths is
   `Core/Helpers/FileSelection.NextUnhandledIndex` (tested).
+- **"No action = Unlink" at processing time** (`TriageService.AddImplicitUnlinksAsync`, rules in
+  `Core/Helpers/ImplicitUnlink`, tested). **Why: Lidarr deletes whatever is left unmatched in a
+  folder once it imports from it**, so every file the user left without an action must be moved out
+  first (Unlink moves it to the import root). Scope is only releases with ≥1 *Import* action
+  (that's when Lidarr cleans up; a lone Delete/Move in a release doesn't put its other files at
+  risk, and unlinking those would surprise people). File lists come from the prefetch cache
+  (`GetOrFetchQueueRecordFilesAsync`), files that no longer exist on disk are skipped (a previous
+  run already moved them), and the synthetic rows are flagged `IsImplicitUnlink`, visible in Actions
+  to Take, and **rebuilt from scratch on every run** (so a release that lost its Import via Unselect
+  doesn't keep them). If the queue record or its file list can't be obtained the whole run is
+  refused with a message rather than importing anyway — importing would let Lidarr delete the
+  unaccounted-for files. The Import page dims (italic, tooltip) files that will be auto-unlinked.
+  Live-verified only up to the backup step (dev instance with an unwritable backup folder so no real
+  file moved); the actual moves reuse the existing Unlink path.
 - **Multi-select on the files list**: plain click selects; Shift-click checks the range from the
   last anchor (`FileSelection.RangeBetween`); Ctrl/Cmd-click toggles one. "Checked" files are what
   Delete/Unlink/Move act on. Cells are `user-select:none` so shift-click doesn't highlight text.

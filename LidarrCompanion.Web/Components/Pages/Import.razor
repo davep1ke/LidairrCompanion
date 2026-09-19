@@ -88,9 +88,12 @@
                         {
                             <tr><td colspan="3" class="pending-note">⏳ Loading files...</td></tr>
                         }
+                        @{ var releaseHasImport = ReleaseHasImportAction(); }
                         @foreach (var file in Triage.ManualImportFiles)
                         {
-                            <tr class="@(file == Triage.SelectedFile ? "row-selected" : "")"
+                            var willUnlink = releaseHasImport && !file.ProposedActionType.HasValue;
+                            <tr class="@(file == Triage.SelectedFile ? "row-selected" : "") @(willUnlink ? "will-unlink" : "")"
+                                title="@(willUnlink ? "No action yet - will be unlinked when you process (Lidarr deletes files left behind in the folder)." : null)"
                                 style="@FileRowStyle(file)">
                                 <td>
                                     <input type="checkbox" checked="@Triage.CheckedFileIds.Contains(file.Id)" @onchange="e => ToggleFileChecked(file, (bool)(e.Value ?? false))" />
@@ -414,6 +417,13 @@
 
         StateHasChanged();
     }
+
+    // Releases with an Import action get every action-less file auto-unlinked at processing time
+    // (TriageService.AddImplicitUnlinksAsync); this is just the on-screen hint for that.
+    private bool ReleaseHasImportAction() =>
+        Triage.SelectedQueueRecord is { } record
+        && Triage.ProposedActions.Any(p => p.Action == ProposalActionType.Import && !p.IsImplicitUnlink
+            && ImplicitUnlink.IsSameRelease(record.DownloadId, record.Title, new ImplicitUnlink.ReleaseKey(p.DownloadId ?? string.Empty, p.OriginalRelease ?? string.Empty)));
 
     private string? GetDestinationName(LidarrManualImportFile file)
     {

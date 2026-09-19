@@ -643,54 +643,13 @@ namespace LidarrCompanion.Web.Services
 
             _proposalService.CreateManualAssignment(SelectedFile, SelectedTrack, SelectedQueueRecord, Artists, ProposedActions, ManualImportFiles, AssignedFileIds, AssignedTrackIds);
 
-            MarkOtherFilesForUnlink(SelectedFile, SelectedQueueRecord);
-
             // Moving on to the next file (and re-sorting the tracks for it) is AdvanceAfterActionAsync's
             // job, shared with Unlink/Delete/Move - the caller invokes it after a Success.
             return MarkMatchResult.Success;
         }
 
-        private void MarkOtherFilesForUnlink(LidarrManualImportFile assignedFile, LidarrQueueRecord? queueRecord)
-        {
-            if (queueRecord == null || string.IsNullOrWhiteSpace(queueRecord.Title))
-                return;
-
-            var originalRelease = queueRecord.Title;
-            var assignedFolder = Path.GetDirectoryName(assignedFile.Path);
-
-            foreach (var file in ManualImportFiles)
-            {
-                if (file.Id == assignedFile.Id) continue;
-                if (file.ProposedActionType != null || AssignedFileIds.Contains(file.Id)) continue;
-                if (ProposedActions.Any(p => p.FileId == file.Id)) continue;
-
-                var fileFolder = Path.GetDirectoryName(file.Path);
-                if (!string.Equals(fileFolder, assignedFolder, StringComparison.OrdinalIgnoreCase)) continue;
-
-                var unlinkProposal = new ProposedAction
-                {
-                    Action = ProposalActionType.Unlink,
-                    FileId = file.Id,
-                    Path = file.Path,
-                    OriginalFileName = Path.GetFileName(file.Path) ?? string.Empty,
-                    OriginalRelease = originalRelease,
-                    Quality = file.Quality,
-                    IsAutoUnlink = true
-                };
-
-                ProposedActions.Add(unlinkProposal);
-                file.ProposedActionType = ProposalActionType.Unlink;
-            }
-        }
-
-        private bool IsFileHandled(LidarrManualImportFile f)
-        {
-            var proposal = ProposedActions.FirstOrDefault(p => p.FileId == f.Id);
-            return FileSelection.IsUserHandled(
-                AssignedFileIds.Contains(f.Id),
-                proposal is not null || f.ProposedActionType.HasValue,
-                proposal?.IsAutoUnlink == true);
-        }
+        private bool IsFileHandled(LidarrManualImportFile f) =>
+            f.ProposedActionType.HasValue || AssignedFileIds.Contains(f.Id);
 
         // After Mark Match / Unlink / Delete / Move: jump to the next file that still needs a
         // decision, so working through a release is a run of key presses with no clicking between.
@@ -840,9 +799,16 @@ namespace LidarrCompanion.Web.Services
             var summary = new ImportSummary(0, 0, 0, 0);
             bool paused = false;
             string? backupFailure = null;
+            string? unlinkPlanFailure = null;
 
             await RunBusyAsync("Importing files to Lidarr...", async () =>
             {
+                // Before anything is backed up or moved: every file in a release being imported that
+                // the user left without an action becomes an Unlink, because Lidarr deletes whatever
+                // is left behind in the folder after importing from it.
+                unlinkPlanFailure = await AddImplicitUnlinksAsync();
+                if (unlinkPlanFailure is not null) return;
+
                 var actionsSnapshot = ProposedActions.ToList();
                 var prepare = _importRunner.PrepareImport(actionsSnapshot, new ImportResult());
 
@@ -881,12 +847,63 @@ namespace LidarrCompanion.Web.Services
 
             // When paused, the caller navigates straight to /cover-art - the page itself is the
             // message, so nothing is posted to the status bar.
-            if (backupFailure is not null)
+            if (unlinkPlanFailure is not null)
+                _status.ShowError(unlinkPlanFailure);
+            else if (backupFailure is not null)
                 _status.ShowError(BackupFailureHelp.Describe(backupFailure));
             else if (!paused && summary.HasAnyResult)
                 PostImportSummary(summary);
 
             return summary;
+        }
+
+        // Applies the "no action = Unlink" rule (see ImplicitUnlink for why and for its scope).
+        // Rebuilt from scratch on every run, so a release that has since lost its Import action (the
+        // user hit Unselect after a failed run) doesn't keep unlinks it no longer needs.
+        //
+        // Returns an error message when the rule couldn't be applied safely. In that case nothing is
+        // processed: importing anyway would let Lidarr delete the files that couldn't be accounted for.
+        private async Task<string?> AddImplicitUnlinksAsync()
+        {
+            foreach (var old in ProposedActions.Where(a => a.IsImplicitUnlink).ToList())
+            {
+                var row = ManualImportFiles.FirstOrDefault(f => f.Id == old.FileId);
+                if (row is not null) row.ProposedActionType = null;
+                ProposedActions.Remove(old);
+            }
+
+            foreach (var key in ImplicitUnlink.ReleasesBeingImported(ProposedActions))
+            {
+                var record = QueueRecords.FirstOrDefault(r => ImplicitUnlink.IsSameRelease(r.DownloadId, r.Title, key));
+                if (record is null)
+                    return $"Couldn't find the queue record for '{key.OriginalRelease}' to check for unmatched files, so nothing was processed. Click Refresh and redo that release.";
+
+                List<LidarrManualImportFile> files;
+                try
+                {
+                    files = await _prefetch.GetOrFetchQueueRecordFilesAsync(record);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"Couldn't list files to unlink for '{record.Title}': {ex.Message}", LogSeverity.High, new { Release = record.Title, Error = ex.Message });
+                    return $"Couldn't list the files in '{record.Title}' to unlink the unmatched ones ({ex.Message}), so nothing was processed - Lidarr would delete them.";
+                }
+
+                var unlinks = ImplicitUnlink.Build(files, ProposedActions, key.OriginalRelease, key.DownloadId,
+                    f => FileOperationsHelper.ValidateFileExists(FileOperationsHelper.ResolveMappedPathAnyKnown(f.Path, true)));
+
+                foreach (var unlink in unlinks)
+                {
+                    ProposedActions.Add(unlink);
+                    var row = ManualImportFiles.FirstOrDefault(f => f.Id == unlink.FileId);
+                    if (row is not null) row.ProposedActionType = ProposalActionType.Unlink;
+                }
+
+                if (unlinks.Count > 0)
+                    Logger.Log($"Added {unlinks.Count} implicit Unlink action(s) for unmatched files in '{record.Title}'", LogSeverity.Medium, new { Release = record.Title, Count = unlinks.Count });
+            }
+
+            return null;
         }
 
         // Called by the Cover Art page's Finish Import / Save & Finish buttons once every item has

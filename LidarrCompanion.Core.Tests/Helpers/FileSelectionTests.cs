@@ -98,30 +98,5 @@ namespace LidarrCompanion.Core.Tests.Helpers
 
             Assert.Equal(-1, FileSelection.NextUnhandledIndex(3, 1, handled.Contains));
         }
-
-        [Theory]
-        [InlineData(false, false, false, false)] // untouched file: not handled
-        [InlineData(true, false, false, true)]   // assigned to a track: handled
-        [InlineData(false, true, false, true)]   // user chose Delete/Unlink/Move: handled
-        [InlineData(false, true, true, false)]   // auto-generated sibling Unlink: still needs a decision
-        [InlineData(true, true, true, true)]     // assigned wins even if a stale auto-unlink lingers
-        public void IsUserHandled_AutoUnlinkedSiblingsDoNotCount(bool assigned, bool hasProposal, bool auto, bool expected)
-        {
-            Assert.Equal(expected, FileSelection.IsUserHandled(assigned, hasProposal, auto));
-        }
-
-        [Fact]
-        public void MatchingOneTrackOfAFiveTrackRelease_AdvancesToTheNextTrack_NotOffTheRelease()
-        {
-            // File 0 was just matched; files 1-4 were auto-unlinked as siblings. The old rule
-            // ("has any proposal = handled") found nothing left and moved to the next artist.
-            var matched = new HashSet<int> { 0 };
-            var autoUnlinked = new HashSet<int> { 1, 2, 3, 4 };
-
-            var next = FileSelection.NextUnhandledIndex(5, 0,
-                i => FileSelection.IsUserHandled(matched.Contains(i), matched.Contains(i) || autoUnlinked.Contains(i), autoUnlinked.Contains(i)));
-
-            Assert.Equal(1, next);
-        }
     }
 }
