@@ -850,7 +850,7 @@ namespace LidarrCompanion.Web.Services
             if (unlinkPlanFailure is not null)
                 _status.ShowError(unlinkPlanFailure);
             else if (backupFailure is not null)
-                _status.ShowError(BackupFailureHelp.Describe(backupFailure));
+                _status.ShowError(backupFailure);
             else if (!paused && summary.HasAnyResult)
                 PostImportSummary(summary);
 

@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using LidarrCompanion.Helpers;
 
 namespace LidarrCompanion.Services
 {
@@ -38,26 +39,66 @@ namespace LidarrCompanion.Services
         }
 
         // Embed cover art into an audio file, replacing any existing pictures. Returns false on
-        // any failure (missing file, invalid image data, tag write error) rather than throwing.
-        public static bool SaveCoverArt(string filePath, byte[] imageData)
+        // any failure (missing file, invalid image data, tag write error) rather than throwing;
+        // error carries the reason.
+        public static bool SaveCoverArt(string filePath, byte[] imageData) => TrySaveCoverArt(filePath, imageData, out _);
+
+        public static bool TrySaveCoverArt(string filePath, byte[] imageData, out string? error)
         {
+            error = null;
+
             if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            {
+                error = "the file doesn't exist at that path";
                 return false;
+            }
 
             if (imageData is null || imageData.Length == 0)
+            {
+                error = "the image is empty";
                 return false;
+            }
 
             try
             {
-                using var file = TagLib.File.Create(filePath);
-                var picture = new TagLib.Picture(imageData)
+                try
                 {
-                    Type = TagLib.PictureType.FrontCover,
-                    Description = "Cover"
-                };
-                file.Tag.Pictures = new TagLib.IPicture[] { picture };
-                file.Save();
+                    WriteCoverArt(filePath, imageData);
+                }
+                catch (TagLib.CorruptFileException) when (TryRepairPadding(filePath))
+                {
+                    // The file was valid MP3 that TagLib couldn't open until its ID3 padding was
+                    // accounted for (see Id3PaddingRepair) - the repair worked, so write again.
+                    WriteCoverArt(filePath, imageData);
+                }
+
                 return true;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return false;
+            }
+        }
+
+        private static void WriteCoverArt(string filePath, byte[] imageData)
+        {
+            using var file = TagLib.File.Create(filePath);
+            var picture = new TagLib.Picture(imageData)
+            {
+                Type = TagLib.PictureType.FrontCover,
+                Description = "Cover"
+            };
+            file.Tag.Pictures = new TagLib.IPicture[] { picture };
+            file.Save();
+        }
+
+        private static bool TryRepairPadding(string filePath)
+        {
+            try
+            {
+                using var stream = new FileStream(filePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+                return Id3PaddingRepair.TryExtendTagOverPadding(stream);
             }
             catch
             {

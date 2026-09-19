@@ -280,6 +280,20 @@ rows in bounded mode (otherwise the Move buttons need their own scrollbar on a l
   "Show more" revealing the rest of the already-fetched (single-credit) results. Remaining latency
   is SerpApi/Google itself (~10-20s uncached) and can't be fixed on our side.
 
+### Cover-art save and MP3s TagLib can't open
+
+`FileAndAudioService.SaveCoverArt` used to swallow every exception, so the user just saw "Failed to
+save cover art to '<path>'". Reproduced with the real file: it was a valid MP3 (ffprobe fine) with
+~38 KB of zero padding between the ID3v2 tag and the first MPEG frame; TagLib only searches a short
+distance for audio and throws `CorruptFileException: MPEG audio header not found` — so it can't
+open *or* write the file. `Id3PaddingRepair` grows the ID3 tag's size field to cover the padding
+(4-byte in-place edit; audio and tag content untouched) and the save is retried once.
+`TrySaveCoverArt` now returns the reason, which the gate puts in the error. Note
+`ExtractCoverArt`/`ExtractMetadata` still just return empty for such a file (read-only; they never
+repair), so artist/album can be blank on the cover-art page for them. To debug a tag failure, don't
+guess: copy the file to scratch and drive TagLib directly (a throwaway console project referencing
+`LidarrCompanion.Core` works).
+
 ## Blazor-specific gotchas actually hit in this codebase
 
 These cost real debugging time. Read before touching render logic.
@@ -480,9 +494,9 @@ restart) before ever touching the real TrueNAS target.
   (proposed actions, selection)** — nothing about proposals is persisted, so redo the matches after.
   Rebuilding/recreating the container (`docker compose up -d`) re-binds too, but binds whatever the
   host has mounted *at that moment* — check `mount | grep cifs` on the host first.
-  `BackupFailureHelp` (Core) appends this hint to the status-bar error when a backup fails with a
-  "not found"; propagation flags (`rslave`) don't help because the share is mounted *over* the
-  bound directory rather than inside it.
+  Propagation flags (`rslave`) don't help because the share is mounted *over* the bound directory
+  rather than inside it. (An in-app hint for this was added and then removed at the owner's
+  request — see the no-hints standing instruction.)
 - **`/cover-art-test`** is a hidden dev harness (no nav link, route still live) working against
   copies in `/mnt/Music/.cover-art-test` (`TestFolder` constant) with no dependency on the import
   pipeline. Its search/preview/drag code is a *parallel copy* of `CoverArt.razor`'s, not shared —

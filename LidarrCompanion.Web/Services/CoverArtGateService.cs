@@ -51,8 +51,8 @@ namespace LidarrCompanion.Web.Services
 
         public void SaveCoverArt(CoverArtQueueItem item, byte[] imageData, string mimeType)
         {
-            if (!FileAndAudioService.SaveCoverArt(item.FilePath, imageData))
-                throw new InvalidOperationException($"Failed to save cover art to '{item.FilePath}'.");
+            if (!FileAndAudioService.TrySaveCoverArt(item.FilePath, imageData, out var error))
+                throw new InvalidOperationException($"Failed to save cover art to '{item.FilePath}': {error}.");
 
             item.HasCoverArt = true;
             item.CoverArtPreview = imageData;
