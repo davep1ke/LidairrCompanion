@@ -19,6 +19,9 @@ changes — it explains *why*, not just *what*.
   realistically testable in this codebase and where it lives. A bug fix to pure logic (a query
   builder, a message formatter, a path-mapping fallback) should come with a regression test in
   the same change, the same way you'd expect from any other project.
+- **Don't add user-facing hints without asking** — no explanatory text, tooltips, "this can take a
+  while" notes or advisory suffixes on messages unless the user requested them. Ship the behaviour
+  and only the messages asked for; put explanations in the reply or here instead.
 - Run `dotnet test LidarrCompanion.Core.Tests` before considering a change to `LidarrCompanion.Core`
   done. It's fast (well under a second) and every green run so far has been a real regression
   check, not theater — this suite has caught real signature-mismatch breaks during refactors.

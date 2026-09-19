@@ -297,7 +297,7 @@ else
     {
         if (_isBusy || string.IsNullOrWhiteSpace(_searchTerm)) return;
         _isBusy = true;
-        _statusMessage = $"Searching web images for: {_searchTerm} (Google can take 10-20 seconds the first time a query is run)";
+        _statusMessage = $"Searching web images for: {_searchTerm}";
         _manualResults.Clear();
         _discogsResults.Clear();
         StateHasChanged();
