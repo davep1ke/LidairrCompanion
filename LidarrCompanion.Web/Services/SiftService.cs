@@ -134,6 +134,30 @@ namespace LidarrCompanion.Web.Services
             LoadTrack(0);
         }
 
+        private int _currentIndex;
+
+        public bool CanGoBack => CurrentTrack is not null && _currentIndex > 0;
+
+        // Moves to the next track without keeping or trashing this one, which stays in the queue.
+        // At the end of the queue it wraps to the start, so skipped tracks come round again.
+        // Returns false (and does nothing) when there is nowhere else to go.
+        public bool Skip()
+        {
+            if (CurrentTrack is null || _allTracks.Count < 2) return false;
+
+            LoadTrack((_currentIndex + 1) % _allTracks.Count);
+            return true;
+        }
+
+        // Moves to the previous track in the queue (for example one that was skipped).
+        public bool GoBack()
+        {
+            if (!CanGoBack) return false;
+
+            LoadTrack(_currentIndex - 1);
+            return true;
+        }
+
         private void LoadTrack(int index)
         {
             if (index < 0 || index >= _allTracks.Count)
@@ -143,6 +167,7 @@ namespace LidarrCompanion.Web.Services
                 return;
             }
 
+            _currentIndex = index;
             CurrentTrack = _allTracks[index];
             UpdateNextTracksList(index);
         }
@@ -239,6 +264,13 @@ namespace LidarrCompanion.Web.Services
             if (index < _allTracks.Count)
             {
                 LoadTrack(index);
+                return true;
+            }
+
+            // Ran off the end but tracks remain: they can only be ones that were skipped earlier.
+            if (_allTracks.Count > 0)
+            {
+                LoadTrack(0);
                 return true;
             }
 

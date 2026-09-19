@@ -49,6 +49,11 @@
         </div>
 
         <div class="sift-seek-row">
+            <button @onclick="GoBack" disabled="@(!SiftState.CanGoBack)">◄ Back</button>
+            <button @onclick="Skip" disabled="@(SiftState.CurrentTrack is null)">Skip ►</button>
+        </div>
+
+        <div class="sift-seek-row">
             <button @onclick="SeekBackward" title="-">◄ -5% (-)</button>
             <button class="@(SiftState.DefaultStartPositionPercent == 15 ? "default-position" : "")" @onclick="() => SeekOrPlay(0.15)" @oncontextmenu="() => SetDefaultPosition(15)" @oncontextmenu:preventDefault="true">1 (15%)</button>
             <button class="@(SiftState.DefaultStartPositionPercent == 30 ? "default-position" : "")" @onclick="() => SeekOrPlay(0.30)" @oncontextmenu="() => SetDefaultPosition(30)" @oncontextmenu:preventDefault="true">2 (30%)</button>
@@ -144,6 +149,20 @@
         var hasNext = action();
         Playback.Stop();
         if (hasNext && wasPlaying) await PlayCurrentTrack();
+        StateHasChanged();
+    }
+
+    private async Task Skip() => await MoveTo(() => SiftState.Skip());
+    private async Task GoBack() => await MoveTo(() => SiftState.GoBack());
+
+    // Unlike Keep/Trash nothing is removed; if a track was playing, the one moved to plays instead.
+    private async Task MoveTo(Func<bool> move)
+    {
+        var wasPlaying = IsCurrentSiftTrackPlaying;
+        if (!move()) return;
+
+        Playback.Stop();
+        if (wasPlaying) await PlayCurrentTrack();
         StateHasChanged();
     }
 

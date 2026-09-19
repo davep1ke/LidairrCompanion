@@ -271,6 +271,13 @@ initials that actually occur (`Core/Helpers/AlphabeticalRotation`, tested); digi
 wrap to the very end. It runs on the initial load and every time the Sift page is opened, except
 when a Sift track is currently playing (coming back to a track mid-play keeps its place).
 
+Sift also has **Skip** and **Back** buttons (no shortcuts): Skip moves on without keeping/trashing
+(the track stays in the queue and Skip wraps from the end to the start); Back steps to the previous
+queue entry. If Keep/Trash runs off the end while tracks remain (i.e. skipped ones), it wraps to the
+first remaining track instead of declaring the queue empty — otherwise a skipped track could be
+stranded (Back is disabled with no current track). The wrap-on-removal path is not live-tested
+(it needs a real Keep/Trash).
+
 ### Status bar, cover-art hand-off, cookie
 
 - `StatusService` (now in **Core**, `Core/Models`, so its timing is unit-tested) auto-dismisses
