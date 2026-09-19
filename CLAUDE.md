@@ -184,11 +184,12 @@ These cost real debugging time. Read before touching render logic.
 - **A fire-and-forget async call from `OnInitialized()` (not a direct `@onclick`-bound handler)
   does not automatically trigger a re-render when it completes.** Blazor's "re-render after the
   event handler's task completes" behavior only applies to methods invoked through the normal
-  component event-binding pipeline. `CoverArt.razor`'s automatic MusicBrainz search is kicked off
-  from `OnInitialized()` (`SelectFirstMissingOrFirst()` → `_ = LoadItemAsync(...)`), so its
-  completion needs an explicit `await InvokeAsync(StateHasChanged)` — without it, the fields update
-  correctly (confirmable via server logs) but the page visually never changes, which looks exactly
-  like a hung network call and isn't one.
+  component event-binding pipeline. `CoverArt.razor`'s opt-in auto-search is kicked off from
+  `LoadItem()` (`_ = SearchManual()`, reached from `OnInitialized()` via
+  `SelectFirstMissingOrFirst()`), so `SearchManual`'s `finally` needs an explicit
+  `await InvokeAsync(StateHasChanged)` — without it, the fields update correctly (confirmable via
+  server logs) but the page visually never changes, which looks exactly like a hung network call
+  and isn't one.
 - **`@rendermode InteractiveServer` prerenders by default**, which runs `OnInitialized` twice per
   page visit — once for a throwaway static prerender, once for the real interactive circuit. For
   a page whose `OnInitialized` has side effects (an outbound API call, in `CoverArt.razor`'s case),
@@ -210,7 +211,29 @@ These cost real debugging time. Read before touching render logic.
   unexplained horizontal overflow.
 - Settings persist as `SettingKey.ToString()` → JSON key in `data/appsettings.json`. Renaming a
   `SettingKey` enum member silently resets that setting to default for existing installs unless you
-  also migrate the JSON file's keys.
+  also migrate the JSON file's keys. A brand-new key just defaults (no migration needed). The
+  Settings page auto-generates its grid from the `SettingKey` enum's `[Setting(...)]` attributes,
+  so a new setting needs no page markup.
+- **`StatusService.IsBusy` is one global singleton flag, and `.triage-page.busy` sets
+  `pointer-events: none` on the whole page.** Anything that leaves it true — or a page that
+  doesn't re-render when it clears — leaves every click on the page silently dead (no error,
+  nothing in the logs). A page that renders `Triage.IsBusy` must subscribe to `Status.Changed` and
+  `InvokeAsync(StateHasChanged)` (see `Import.razor`; `StatusBar.razor` is the reference pattern),
+  unsubscribing in `Dispose`. Also: hammering the app with many concurrent test tabs overlaps busy
+  operations on this shared flag and makes it look far worse than it is for a single real user.
+- **The global auth `FallbackPolicy` gates static assets too.** `MapStaticAssets()` needs
+  `.AllowAnonymous()` or the login page's own CSS is redirected to `/login` (unstyled login page
+  for everyone without a cookie). Known residual gap: `_framework/blazor.web.js` and the SignalR
+  negotiate endpoint are registered separately and are still gated pre-login — harmless because
+  the login form is a plain HTML POST that needs no circuit.
+- **A dead Blazor circuit (container restarted under an open tab) looks like a frozen page**:
+  stale text, dead clicks, no error. The default `ReconnectModal.razor.js` only retries on
+  `visibilitychange`, which never fires for a tab that stayed focused; ours adds an 8s
+  `location.reload()` fallback in the `failed` state.
+- **`display: flex` column parents stretch buttons to full width** — `.cover-art-page button` sets
+  `align-self: flex-start` for that reason. The cover-art pages are viewport-bounded
+  (`height: calc(100vh - 5.5rem)`) with only `.cover-art-results-frame` flexing/scrolling; every
+  other section is `flex-shrink: 0`.
 
 ## DI registration reference (`LidarrCompanion.Web/Program.cs`)
 
@@ -327,6 +350,28 @@ restart) before ever touching the real TrueNAS target.
 - Kestrel listens on `:8080` inside the container (`ASPNETCORE_URLS=http://+:8080`, matching the
   modern ASP.NET Core container convention), mapped to host port `5299` in
   `docker-compose.yml` — change the host side freely, the container side has no reason to change.
+- **Never split the Dockerfile into `dotnet restore` (csproj-only layer) + `publish --no-restore`.**
+  It looks like the standard cache optimization but silently produced an image whose static web
+  assets manifest was missing `blazor.web.js` — no build error, just a 404 at runtime and a page
+  where *nothing* is clickable. Verify any Dockerfile change with
+  `docker exec <c> grep -o 'blazor\.web[^"]*\.js' /app/LidarrCompanion.Web.staticwebassets.endpoints.json`
+  (should list `blazor.web.js`), and use `docker compose build --no-cache` when checking.
+- **Deploying to TrueNAS (custom YAML) — the two mistakes already made once:** the port mapping's
+  container side must be `8080` (`'3010:8080'`, not `'3010:3010'`), and a `/data` volume is
+  mandatory (settings, admin password hash, login keys and logs all live there; without it they
+  reset on every restart). A fresh `/data` means Settings starts empty — the path-mapping settings
+  (`ImportPathCompanion`, `LibraryPathCompanion`, `BackupRootFolder`, destinations) must be set to
+  the *container-side* mount paths chosen in that YAML. Their compose uses `/mnt/music` and
+  `/mnt/backups`, lowercase and different from the dev machine's `/mnt/Music`.
+- **Bind-mounting a network (CIFS) path that isn't in `/etc/fstab`**: after a host reboot Docker
+  starts the container before the share is mounted, so the container binds an empty directory and
+  every file is "not found" (backup step fails first). Even after the host remounts, the container
+  keeps the stale empty view — `docker compose restart` fixes it. (`/mnt/Music` on the dev machine
+  is exactly this case.)
+- **`/cover-art-test`** is a hidden dev harness (no nav link, route still live) working against
+  copies in `/mnt/Music/.cover-art-test` (`TestFolder` constant) with no dependency on the import
+  pipeline. Its search/preview/drag code is a *parallel copy* of `CoverArt.razor`'s, not shared —
+  keep the two in sync if either changes, or delete it once it's no longer useful.
 - `UseHttpsRedirection()` in `Program.cs` is intentionally left unconditional (not gated to
   Development) — with no HTTPS port configured (true both in local dev and in this Docker setup),
   the middleware just logs "Failed to determine the https port for redirect" and passes the
