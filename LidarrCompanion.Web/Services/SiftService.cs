@@ -103,12 +103,35 @@ namespace LidarrCompanion.Web.Services
                 else
                     _status.ShowError("No audio files found in sift folder.");
 
-                LoadTrack(0);
+                StartAtRandomLetter();
             }
             catch (Exception ex)
             {
                 _status.ShowError($"Error loading tracks: {ex.Message}");
             }
+        }
+
+        private readonly Random _random = new();
+
+        // Keeps the queue alphabetical but starts it at a random letter (wrapping to A after Z), so
+        // the end of the alphabet gets its turn even when the queue is rarely emptied. Called on load
+        // and again each time the Sift page is opened.
+        public void StartAtRandomLetter()
+        {
+            if (_allTracks.Count == 0)
+            {
+                LoadTrack(0);
+                return;
+            }
+
+            var letter = AlphabeticalRotation.PickStartLetter(_allTracks, t => t.FileName, _random);
+            var ordered = letter is { } l
+                ? AlphabeticalRotation.StartingAt(_allTracks, t => t.FileName, l)
+                : _allTracks.OrderBy(t => t.FileName, StringComparer.OrdinalIgnoreCase).ToList();
+
+            _allTracks.Clear();
+            _allTracks.AddRange(ordered);
+            LoadTrack(0);
         }
 
         private void LoadTrack(int index)

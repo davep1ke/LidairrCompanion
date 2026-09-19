@@ -262,6 +262,15 @@ actions 2), every list `flex:1; min-height:0; overflow:auto`, so lists grow with
 that the older fixed `max-height`s apply and the page scrolls. The controls column spans both grid
 rows in bounded mode (otherwise the Move buttons need their own scrollbar on a laptop).
 
+### Sift start position
+
+`SiftService.StartAtRandomLetter` keeps the queue alphabetical (by file name) but begins it at a
+random letter, wrapping to A after Z, so the tail of the alphabet isn't starved when the queue is
+rarely emptied (real complaint: Z tracks sat there forever). The letter is picked uniformly from the
+initials that actually occur (`Core/Helpers/AlphabeticalRotation`, tested); digit/symbol-named files
+wrap to the very end. It runs on the initial load and every time the Sift page is opened, except
+when a Sift track is currently playing (coming back to a track mid-play keeps its place).
+
 ### Status bar, cover-art hand-off, cookie
 
 - `StatusService` (now in **Core**, `Core/Models`, so its timing is unit-tested) auto-dismisses

@@ -84,6 +84,12 @@
         {
             SiftState.LoadTracksFromFolder();
         }
+        else if (!IsCurrentSiftTrackPlaying)
+        {
+            // Re-opening Sift starts somewhere new, unless a track is mid-play (then the user is
+            // just coming back to it).
+            SiftState.StartAtRandomLetter();
+        }
 
         Playback.StateChanged += OnPlaybackChanged;
     }
