@@ -1,4 +1,5 @@
 @using System.Text.Json
+@implements IAsyncDisposable
 @inject IJSRuntime JS
 
 <div class="modal-backdrop">
@@ -7,7 +8,7 @@
         <p class="modal-context">@_contextText</p>
 
         <div class="manual-match-search">
-            <input @bind="_searchTerm" @bind:event="oninput" @onkeydown="OnSearchKeyDown" placeholder="Search..." />
+            <input @ref="_searchInput" @bind="_searchTerm" @bind:event="oninput" @onkeydown="OnSearchKeyDown" placeholder="Search..." />
             <button @onclick="SearchMusicBrainz" disabled="@_isBusy">Search MusicBrainz</button>
             <button @onclick="SearchExternal" disabled="@_isBusy">Search External</button>
             <button @onclick="Reset" disabled="@_isBusy">Reset</button>
@@ -78,6 +79,23 @@
     private string? _previewImageUrl;
     private ManualMatchItem? _selected;
     private bool _isBusy;
+    private ElementReference _searchInput;
+    private IJSObjectReference? _helpers;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+
+        _helpers = await JS.InvokeAsync<IJSObjectReference>("import", "./js/dialogHelpers.js");
+        await _helpers.InvokeVoidAsync("focusAndSelect", _searchInput);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_helpers is null) return;
+        try { await _helpers.DisposeAsync(); }
+        catch (JSDisconnectedException) { /* circuit already gone */ }
+    }
 
     private IEnumerable<ManualMatchItem> FilteredItems
     {
