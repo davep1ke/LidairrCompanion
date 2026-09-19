@@ -32,5 +32,41 @@ namespace LidarrCompanion.Core.Tests.Helpers
         {
             Assert.Equal(expected, SerpApiHelper.IsGifUrl(url));
         }
+
+        [Fact]
+        public void ChooseImageUrls_GridGetsTheThumbnail_PreviewAndDownloadGetTheOriginal()
+        {
+            var (thumb, full) = SerpApiHelper.ChooseImageUrls("https://example.com/big.jpg", "https://gstatic.com/small.jpg");
+
+            Assert.Equal("https://gstatic.com/small.jpg", thumb);
+            Assert.Equal("https://example.com/big.jpg", full);
+        }
+
+        [Fact]
+        public void ChooseImageUrls_UnusablePseudoUrlOriginal_FallsBackToTheThumbnailForBoth()
+        {
+            var (thumb, full) = SerpApiHelper.ChooseImageUrls("x-raw-image://abc", "https://gstatic.com/small.jpg");
+
+            Assert.Equal("https://gstatic.com/small.jpg", thumb);
+            Assert.Equal("https://gstatic.com/small.jpg", full);
+        }
+
+        [Fact]
+        public void ChooseImageUrls_MissingThumbnail_UsesTheOriginalForBoth()
+        {
+            var (thumb, full) = SerpApiHelper.ChooseImageUrls("https://example.com/big.jpg", null);
+
+            Assert.Equal("https://example.com/big.jpg", thumb);
+            Assert.Equal("https://example.com/big.jpg", full);
+        }
+
+        [Fact]
+        public void ChooseImageUrls_NothingUsable_ReturnsNulls()
+        {
+            var (thumb, full) = SerpApiHelper.ChooseImageUrls("x-raw-image://abc", "");
+
+            Assert.Null(thumb);
+            Assert.Null(full);
+        }
     }
 }

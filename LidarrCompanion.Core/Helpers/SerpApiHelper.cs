@@ -60,15 +60,7 @@ namespace LidarrCompanion.Helpers
                     var sourceUrl = img.TryGetProperty("link", out var lk) ? lk.GetString() : null;
                     var sourceName = img.TryGetProperty("source", out var src) ? src.GetString() : null;
 
-                    // "original" can be a non-fetchable "x-raw-image://..." pseudo-URL for some
-                    // results (a known quirk of Google's own image data, not a SerpApi bug) -
-                    // only trust it as a real, downloadable source when it's an actual http(s)
-                    // URL. Preferring it over "thumbnail" for display too (not just download) is
-                    // what makes the grid's previews sharp instead of Google's ~100px thumbnails;
-                    // CSS still constrains the rendered size, so this doesn't blow the layout up.
-                    var fetchableOriginal = IsFetchableUrl(original) ? original : null;
-                    var fetchableThumbnail = IsFetchableUrl(thumbnail) ? thumbnail : null;
-                    var full = fetchableOriginal ?? fetchableThumbnail;
+                    var (thumb, full) = ChooseImageUrls(original, thumbnail);
                     if (string.IsNullOrWhiteSpace(full)) continue;
 
                     // Google Images results routinely include animated GIFs (confirmed live - a
@@ -81,7 +73,7 @@ namespace LidarrCompanion.Helpers
 
                     results.Add(new SerpApiImageResult
                     {
-                        ThumbnailUrl = full,
+                        ThumbnailUrl = thumb!,
                         FullUrl = full,
                         Title = title,
                         Width = width,
@@ -98,6 +90,21 @@ namespace LidarrCompanion.Helpers
         public async Task<byte[]> DownloadImageAsync(string imageUrl)
         {
             return await _httpClient.GetByteArrayAsync(imageUrl);
+        }
+
+        // The results grid shows Google's own small thumbnail; the full-size original is only used
+        // for the single selected-image preview and the eventual download. Grid thumbnails used to
+        // be the originals too (sharper), but a grid of dozens of multi-megapixel originals made
+        // the page slow to fill in for no benefit at thumbnail size.
+        //
+        // "original" can be a non-fetchable "x-raw-image://..." pseudo-URL for some results (a
+        // known quirk of Google's own image data, not a SerpApi bug), so each is only trusted when
+        // it's an actual http(s) URL, and either one stands in for the other when it's missing.
+        internal static (string? Thumbnail, string? Full) ChooseImageUrls(string? original, string? thumbnail)
+        {
+            var fetchableOriginal = IsFetchableUrl(original) ? original : null;
+            var fetchableThumbnail = IsFetchableUrl(thumbnail) ? thumbnail : null;
+            return (fetchableThumbnail ?? fetchableOriginal, fetchableOriginal ?? fetchableThumbnail);
         }
 
         internal static bool IsFetchableUrl(string? url) =>
