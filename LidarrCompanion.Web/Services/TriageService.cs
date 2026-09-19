@@ -1,6 +1,7 @@
 using LidarrCompanion.Helpers;
 using LidarrCompanion.Models;
 using LidarrCompanion.Services;
+using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 
 namespace LidarrCompanion.Web.Services
@@ -75,31 +76,70 @@ namespace LidarrCompanion.Web.Services
 
         #region Queue / Artists
 
-        // Only auto-triggered once per app lifetime (see Home.razor) - subsequent visits to Home
-        // shouldn't silently re-hit Lidarr every time. The Refresh button is the explicit re-run.
-        public bool HasLoadedOnce { get; private set; }
+        // When the queue/artists were last successfully loaded (null = never, or invalidated by a
+        // new sign-in). Home and Import call NeedsRefresh on arrival: anything older than
+        // RefreshPolicy.DefaultMaxAge, or loaded before the current sign-in, is re-fetched instead
+        // of showing yesterday's queue.
+        public DateTime? LastLoadedUtc { get; private set; }
 
-        // Replaces the old separate "Get Next Files"/"Get Artists" buttons: both matter equally
-        // for keeping the triage screen current, and running them concurrently under one busy
-        // message is both faster and simpler than two independent buttons users had to remember
-        // to press together. Once both land, queues up background prefetch jobs (see
-        // PrefetchService) for every queue record's files and every already-matched artist's
-        // releases, so selecting a record a moment later is instant instead of a fresh Lidarr
-        // round-trip.
-        public Task RefreshAsync() => RunBusyAsync("Refreshing queue and artists from Lidarr...", async () =>
+        public bool NeedsRefresh => RefreshPolicy.IsStale(LastLoadedUtc, DateTime.UtcNow, RefreshPolicy.DefaultMaxAge);
+
+        // Called on sign-in so a new session always starts from fresh Lidarr data.
+        public void MarkSessionStale() => LastLoadedUtc = null;
+
+        private int _refreshing;
+
+        // Single entry point for "get current data": fetches the queue and artists concurrently
+        // under one busy message, drops every prefetched cache (so nothing older than this refresh
+        // survives), auto-matches queue records to artists, then queues background prefetch jobs
+        // (see PrefetchService) for every record's files and every matched artist's releases so
+        // selecting a record a moment later is instant.
+        //
+        // Auto-match used to be a separate button; it's always wanted straight after a refresh, and
+        // a refresh replaces the queue record objects (losing any match), so it belongs here.
+        public async Task RefreshAsync()
         {
-            HasLoadedOnce = true;
+            // Home and Import can both call this on arrival; one refresh at a time is enough.
+            if (Interlocked.Exchange(ref _refreshing, 1) == 1) return;
 
-            var queueOk = FetchQueueRecordsAsync();
-            var artistsOk = FetchArtistsAsync();
-            var results = await Task.WhenAll(queueOk, artistsOk);
+            try
+            {
+                await RunBusyAsync("Refreshing queue and artists from Lidarr...", async () =>
+                {
+                    _prefetch.Reset();
 
-            EnqueueFilePrefetches();
-            EnqueueMatchedArtistPrefetches();
+                    var queueOk = FetchQueueRecordsAsync();
+                    var artistsOk = FetchArtistsAsync();
+                    var results = await Task.WhenAll(queueOk, artistsOk);
 
-            if (results[0] && results[1])
-                _status.SetInfo($"Refreshed: {QueueRecords.Count} queue records, {Artists.Count} artists.");
-        });
+                    SelectedQueueRecord = null;
+                    SelectedFile = null;
+                    SelectedTrack = null;
+                    CheckedFileIds.Clear();
+                    ManualImportFiles.Clear();
+                    ArtistReleaseTracks.Clear();
+
+                    if (results[0] && results[1])
+                    {
+                        LastLoadedUtc = DateTime.UtcNow;
+                        await AutoMatchCoreAsync();
+                    }
+
+                    EnqueueFilePrefetches();
+                    EnqueueMatchedArtistPrefetches();
+
+                    if (results[0] && results[1])
+                    {
+                        var matched = QueueRecords.Count(r => !string.IsNullOrWhiteSpace(r.MatchedArtist));
+                        _status.SetInfo($"Refreshed: {QueueRecords.Count} queue records ({matched} matched to an artist), {Artists.Count} artists.");
+                    }
+                });
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _refreshing, 0);
+            }
+        }
 
         private async Task<bool> FetchQueueRecordsAsync()
         {
@@ -150,7 +190,7 @@ namespace LidarrCompanion.Web.Services
         }
 
         // Only records that already have a MatchedArtist (set by AutoMatch or a manual match, not
-        // by Lidarr's own queue data - see ApplyManualMatchAsync/AutoMatchAsync) have a known
+        // by Lidarr's own queue data - see ApplyManualMatchAsync/AutoMatchCoreAsync) have a known
         // artist worth prefetching releases for.
         private void EnqueueMatchedArtistPrefetches()
         {
@@ -171,27 +211,20 @@ namespace LidarrCompanion.Web.Services
             }
         }
 
-        public Task AutoMatchAsync() => RunBusyAsync("Auto-matching releases to artists...", async () =>
+        private async Task AutoMatchCoreAsync()
         {
-            if (Artists.Count == 0)
-            {
-                _status.ShowError("No artists loaded. Click 'Refresh' first.");
-                return;
-            }
+            if (Artists.Count == 0) return;
 
             var importPath = AppSettings.GetValue(SettingKey.ImportPathLidarr);
             try
             {
                 await Task.Run(() => MatchingService.AutoMatchReleasesToArtists(QueueRecords.ToList(), Artists, importPath));
-                // AutoMatch just populated MatchedArtist on records that didn't have one before -
-                // queue up background prefetch for whichever artists that newly covers.
-                EnqueueMatchedArtistPrefetches();
             }
             catch (Exception ex)
             {
                 _status.ShowError($"Auto match failed: {ex.Message}");
             }
-        });
+        }
 
         public Task OnQueueRecordSelectedAsync(LidarrQueueRecord? record) => RunBusyAsync("Loading files for selected release...", async () =>
         {
@@ -242,12 +275,14 @@ namespace LidarrCompanion.Web.Services
 
         public async Task LoadArtistReleasesAsync(string artistName)
         {
+            // Cleared up front so a record whose artist can't be found (or is still being added to
+            // Lidarr) never keeps showing the previous record's tracks.
+            ArtistReleaseTracks.Clear();
+
             if (Artists.Count == 0) return;
 
             var artist = Artists.FirstOrDefault(a => MatchingService.Normalize(a.ArtistName) == MatchingService.Normalize(artistName));
             if (artist == null) return;
-
-            ArtistReleaseTracks.Clear();
 
             try
             {
@@ -270,23 +305,139 @@ namespace LidarrCompanion.Web.Services
             }
         }
 
-        // Applied after a manual match is resolved (see ManualMatchDialog's result callback).
-        public async Task ApplyManualMatchAsync(LidarrArtist selected)
+        // Manual match: applied when the Match Artist dialog closes with a selection.
+        //
+        // Deliberately does NOT hold the busy lock. The selected record is marked matched
+        // immediately, then everything slow - creating the artist in Lidarr if it isn't there yet,
+        // waiting for Lidarr's own metadata refresh to produce its albums, loading its release
+        // tracks - runs as a background job, so the user can move straight on to the next release
+        // and match that too. Progress is visible via IsArtistPending (queue table / tracks table
+        // show a waiting indicator) and ArtistReleasesReady tells the page when to refresh.
+        public void ApplyManualMatch(LidarrQueueRecord record, LidarrArtist selected)
         {
-            if (SelectedQueueRecord == null) return;
+            var previousMatch = record.Match;
+            var previousArtist = record.MatchedArtist;
 
-            var already = Artists.Any(a => (a.Id != 0 && selected.Id != 0 && a.Id == selected.Id) ||
-                string.Equals(MatchingService.Normalize(a.ArtistName), MatchingService.Normalize(selected.ArtistName), StringComparison.OrdinalIgnoreCase));
-            if (!already)
-                Artists.Add(selected);
+            record.Match = ReleaseMatchType.Exact;
+            record.MatchedArtist = selected.ArtistName;
 
-            SelectedQueueRecord.Match = ReleaseMatchType.Exact;
-            SelectedQueueRecord.MatchedArtist = selected.ArtistName;
+            var key = MatchingService.Normalize(selected.ArtistName);
+            _pendingArtists[key] = selected.Id == 0
+                ? $"Adding {selected.ArtistName} to Lidarr..."
+                : $"Loading releases for {selected.ArtistName}...";
+            ArtistJobsChanged?.Invoke();
 
-            await RunBusyAsync("Applying manual match and loading artist releases...", async () =>
+            _ = Task.Run(() => RunManualMatchJobAsync(record, selected, previousMatch, previousArtist, key));
+        }
+
+        private const int NewArtistPollAttempts = 24;
+        private static readonly TimeSpan NewArtistPollDelay = TimeSpan.FromSeconds(5);
+
+        private async Task RunManualMatchJobAsync(LidarrQueueRecord record, LidarrArtist selected,
+            ReleaseMatchType previousMatch, string? previousArtist, string key)
+        {
+            try
             {
-                await LoadArtistReleasesAsync(SelectedQueueRecord.MatchedArtist);
-            });
+                var artist = selected;
+                var createdNew = selected.Id == 0;
+
+                if (createdNew)
+                {
+                    var existing = Artists.FirstOrDefault(a => string.Equals(a.ForeignArtistId, selected.ForeignArtistId, StringComparison.OrdinalIgnoreCase)
+                        && !string.IsNullOrWhiteSpace(selected.ForeignArtistId));
+                    if (existing is not null)
+                    {
+                        artist = existing;
+                        createdNew = false;
+                    }
+                    else
+                    {
+                        artist = await CreateArtistInLidarrAsync(selected);
+                    }
+                }
+
+                // Copy-on-write: the page and the manual match dialog read Artists while this runs
+                // on another thread, so swap in a new list rather than mutating the shared one.
+                var alreadyKnown = Artists.Any(a => (a.Id != 0 && artist.Id != 0 && a.Id == artist.Id) ||
+                    string.Equals(MatchingService.Normalize(a.ArtistName), MatchingService.Normalize(artist.ArtistName), StringComparison.OrdinalIgnoreCase));
+                if (!alreadyKnown)
+                    Artists = new List<LidarrArtist>(Artists) { artist };
+
+                // A freshly created artist has no albums until Lidarr finishes its own metadata
+                // refresh, so wait (and re-check) for that; an artist Lidarr already had is one fetch.
+                _pendingArtists[key] = $"Waiting for {artist.ArtistName}'s releases from Lidarr...";
+                ArtistJobsChanged?.Invoke();
+
+                var tracks = await Polling.UntilAsync(
+                    () => _prefetch.GetOrFetchArtistTracksAsync(artist),
+                    t => t.Count > 0,
+                    createdNew ? NewArtistPollAttempts : 1,
+                    NewArtistPollDelay);
+
+                if (tracks.Count == 0)
+                    _status.SetInfo($"{artist.ArtistName} was added, but Lidarr hasn't listed any releases for it yet. Select the release again in a minute.");
+                else
+                    _status.SetInfo($"{artist.ArtistName}: {tracks.Count} tracks ready.");
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"Manual artist match failed: {ex.Message}", LogSeverity.High, new { Artist = selected.ArtistName, Error = ex.Message });
+                _status.ShowError($"Couldn't add {selected.ArtistName} to Lidarr: {ex.Message}");
+
+                // Put the record back how it was - leaving it "matched" to an artist that doesn't
+                // exist would mislead the next pass through the queue.
+                record.Match = previousMatch;
+                record.MatchedArtist = previousArtist ?? string.Empty;
+            }
+            finally
+            {
+                _pendingArtists.TryRemove(key, out _);
+                ArtistJobsChanged?.Invoke();
+            }
+
+            ArtistReleasesReady?.Invoke(selected.ArtistName);
+        }
+
+        private static async Task<LidarrArtist> CreateArtistInLidarrAsync(LidarrArtist selected)
+        {
+            var artistName = selected.ArtistName;
+            var foreignId = !string.IsNullOrWhiteSpace(selected.ForeignArtistId) ? selected.ForeignArtistId : Guid.NewGuid().ToString();
+            var folder = string.IsNullOrWhiteSpace(artistName) ? "Unknown" : artistName;
+
+            var rootFolder = AppSettings.GetValue(SettingKey.DefaultArtistRootFolder);
+            var qualityProfileId = AppSettings.Current.GetTyped<int>(SettingKey.DefaultArtistQualityProfileId);
+            var metadataProfileId = AppSettings.Current.GetTyped<int>(SettingKey.DefaultArtistMetadataProfileId);
+
+            var lidarr = new LidarrHelper();
+            var created = await lidarr.CreateArtistAsync(artistName, foreignId, folder, rootFolder, qualityProfileId, metadataProfileId, monitored: true, searchForMissingAlbums: true);
+            return created ?? throw new InvalidOperationException("Lidarr did not return the created artist.");
+        }
+
+        private readonly ConcurrentDictionary<string, string> _pendingArtists = new();
+
+        // Raised (from a background thread) when a manual-match job starts, changes stage or ends,
+        // so the page can re-render its waiting indicators.
+        public event Action? ArtistJobsChanged;
+
+        // Raised (from a background thread) when a manual-match job has finished, whether or not it
+        // found releases. The page calls RefreshSelectedArtistReleasesAsync on its own sync context.
+        public event Action<string>? ArtistReleasesReady;
+
+        public bool IsArtistPending(string? artistName) =>
+            !string.IsNullOrWhiteSpace(artistName) && _pendingArtists.ContainsKey(MatchingService.Normalize(artistName));
+
+        public string? PendingArtistMessage(string? artistName) =>
+            !string.IsNullOrWhiteSpace(artistName) && _pendingArtists.TryGetValue(MatchingService.Normalize(artistName), out var msg) ? msg : null;
+
+        // Reloads the tracks list, but only if the record on screen is the one that was matched
+        // to this artist - the user may well have moved on to another release by now.
+        public async Task RefreshSelectedArtistReleasesAsync(string artistName)
+        {
+            if (SelectedQueueRecord is null) return;
+            if (!string.Equals(MatchingService.Normalize(SelectedQueueRecord.MatchedArtist), MatchingService.Normalize(artistName), StringComparison.OrdinalIgnoreCase))
+                return;
+
+            await LoadArtistReleasesAsync(artistName);
         }
 
         #endregion
@@ -468,12 +619,10 @@ namespace LidarrCompanion.Web.Services
 
             _proposalService.CreateManualAssignment(SelectedFile, SelectedTrack, SelectedQueueRecord, Artists, ProposedActions, ManualImportFiles, AssignedFileIds, AssignedTrackIds);
 
-            var justAssigned = SelectedFile;
-            MarkOtherFilesForUnlink(justAssigned, SelectedQueueRecord);
+            MarkOtherFilesForUnlink(SelectedFile, SelectedQueueRecord);
 
-            ApplySort(SortMode);
-            SelectNextFileInRelease(justAssigned);
-
+            // Moving on to the next file (and re-sorting the tracks for it) is AdvanceAfterActionAsync's
+            // job, shared with Unlink/Delete/Move - the caller invokes it after a Success.
             return MarkMatchResult.Success;
         }
 
@@ -509,25 +658,53 @@ namespace LidarrCompanion.Web.Services
             }
         }
 
-        private void SelectNextFileInRelease(LidarrManualImportFile currentFile)
+        private bool IsFileHandled(LidarrManualImportFile f) =>
+            f.ProposedActionType.HasValue || AssignedFileIds.Contains(f.Id);
+
+        // After Mark Match / Unlink / Delete / Move: jump to the next file that still needs a
+        // decision, so working through a release is a run of key presses with no clicking between.
+        // Order of preference:
+        //   1. the next unhandled file after the one just acted on (or the first unhandled one
+        //      anywhere, if only earlier files were skipped);
+        //   2. if the whole release is now handled, the next queue record, with its first file
+        //      selected - so the user keeps flowing rather than stopping at every release boundary.
+        //   3. otherwise nothing is selected.
+        // The tracks list is re-sorted for whichever file ends up selected. Returns true when the
+        // selection moved to a different file or record (the page scrolls the tracks list to top).
+        public async Task<bool> AdvanceAfterActionAsync(LidarrManualImportFile? actedOn)
         {
             var files = ManualImportFiles.ToList();
-            var currentIndex = files.IndexOf(currentFile);
+            var currentIndex = actedOn is null ? -1 : files.IndexOf(actedOn);
 
-            if (currentIndex >= 0 && currentIndex < files.Count - 1)
+            var next = FileSelection.NextUnhandledIndex(files.Count, currentIndex, i => IsFileHandled(files[i]));
+            if (next >= 0)
             {
-                SelectedFile = files[currentIndex + 1];
-                return;
+                SelectedFile = files[next];
+                ApplySort(SortMode);
+                return true;
             }
 
-            SelectedFile = files.FirstOrDefault(f => f.ProposedActionType != ProposalActionType.Import && !AssignedFileIds.Contains(f.Id));
+            var recordIndex = SelectedQueueRecord is null ? -1 : QueueRecords.IndexOf(SelectedQueueRecord);
+            if (recordIndex >= 0 && recordIndex < QueueRecords.Count - 1)
+            {
+                await OnQueueRecordSelectedAsync(QueueRecords[recordIndex + 1]);
+
+                SelectedFile = ManualImportFiles.FirstOrDefault(f => !IsFileHandled(f));
+                ApplySort(SortMode);
+                return true;
+            }
+
+            SelectedFile = null;
+            ApplySort(SortMode);
+            return false;
         }
 
         #endregion
 
         #region Proposals
 
-        public void CreateProposal(ProposalActionType kind, string? destinationName = null)
+        // Returns the files acted on (empty if nothing was selected), in list order.
+        public List<LidarrManualImportFile> CreateProposal(ProposalActionType kind, string? destinationName = null)
         {
             var selectedFiles = ManualImportFiles.Where(f => CheckedFileIds.Contains(f.Id)).ToList();
             if (selectedFiles.Count == 0 && SelectedFile != null)
@@ -536,7 +713,7 @@ namespace LidarrCompanion.Web.Services
             if (selectedFiles.Count == 0)
             {
                 _status.ShowError("Select one or more files from 'Unimported Release Files' first.");
-                return;
+                return selectedFiles;
             }
 
             foreach (var selFile in selectedFiles)
@@ -567,16 +744,11 @@ namespace LidarrCompanion.Web.Services
             }
 
             CheckedFileIds.Clear();
+            return selectedFiles;
         }
 
-        public void MoveToDestination(ImportDestination dest)
-        {
-            var previouslySelected = SelectedFile;
+        public List<LidarrManualImportFile> MoveToDestination(ImportDestination dest) =>
             CreateProposal(ProposalActionType.MoveToDestination, dest.Name);
-
-            if (previouslySelected != null)
-                SelectNextFileInRelease(previouslySelected);
-        }
 
         public void Unselect(ProposedAction toRemove)
         {
@@ -669,22 +841,17 @@ namespace LidarrCompanion.Web.Services
                 summary = new ImportSummary(result.ImportSuccessCount, result.MoveSuccessCount, result.SecondaryCopyCount, totalFailed);
             });
 
-            if (paused)
-            {
-                var missing = _coverArtGate.MissingCount;
-                _status.SetInfo($"{missing} file(s) need cover art before import can continue - resolve them on the Cover Art page.");
-            }
-            else if (summary.HasAnyResult)
-            {
+            // When paused, the caller navigates straight to /cover-art - the page itself is the
+            // message, so nothing is posted to the status bar.
+            if (!paused && summary.HasAnyResult)
                 PostImportSummary(summary);
-            }
 
             return summary;
         }
 
-        // Called by the Cover Art page's Complete button once every item has been addressed (not
-        // every file needs to end up with art - matching the WPF app, Complete is available even
-        // if some are skipped).
+        // Called by the Cover Art page's Finish Import / Save & Finish buttons once every item has
+        // been addressed (not every file needs to end up with art - matching the WPF app, it is
+        // available even if some are skipped).
         public async Task<ImportSummary> ResumeImportAfterCoverArtAsync()
         {
             var actionsSnapshot = _coverArtGate.CompleteAndTakeActions();

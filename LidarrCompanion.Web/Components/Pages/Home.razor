@@ -11,12 +11,13 @@
 
 @code {
     // Fire-and-forget: kick off the queue/artist load (and the background prefetch it queues up)
-    // as soon as the app is first opened, so it's likely already warm by the time the user
-    // navigates to Import. Only once per app lifetime - TriageService is a singleton, so revisiting
-    // Home later shouldn't silently re-hit Lidarr; Import's Refresh button is the explicit re-run.
+    // when the app is opened, so it's likely already warm by the time the user navigates to
+    // Import. Only when the data is missing or stale (first load, a new sign-in, or older than
+    // RefreshPolicy.DefaultMaxAge) - revisiting Home shouldn't silently re-hit Lidarr every time;
+    // Import's Refresh button is the explicit re-run.
     protected override void OnInitialized()
     {
-        if (!Triage.HasLoadedOnce)
+        if (Triage.NeedsRefresh)
             _ = Triage.RefreshAsync();
     }
 }

@@ -780,6 +780,115 @@ h1:focus {
     min-height: 4rem;
 }
 
+/* Sticky headers so a long, now taller, list keeps its column titles in view. */
+.triage-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--panel-bg);
+}
+
+/* Shift/ctrl-click range selection on the files list would otherwise also select the text. */
+.triage-files .triage-table td {
+    user-select: none;
+}
+
+.pending-indicator {
+    margin-left: 0.4rem;
+    animation: pending-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pending-pulse {
+    50% { opacity: 0.35; }
+}
+
+.pending-note {
+    font-style: italic;
+    color: var(--text-muted);
+    white-space: normal;
+}
+
+/* Viewport-bounded layout: on a normal desktop window the Import page fills the space between the
+   top of the content area and the fixed status/player bars, split between the three sections
+   (queue / files+tracks / actions), and every list grows or shrinks with the window and scrolls
+   internally. On small windows this doesn't apply, so the page falls back to the fixed max-heights
+   above and scrolls as a whole rather than squeezing each list to nothing.
+   The 1.1rem is .content's top padding; the 5.5rem matches the .triage-page padding-bottom that
+   clears the fixed bottom bars. */
+@media (min-width: 641px) and (min-height: 620px) {
+    .triage-page {
+        height: calc(100dvh - 1.1rem - 5.5rem);
+        padding-bottom: 0;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .triage-page > section {
+        min-height: 0;
+    }
+
+    .triage-queue {
+        flex: 3 1 0;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .triage-columns {
+        flex: 6 1 0;
+        grid-template-rows: minmax(0, 1fr) minmax(0, 1.25fr);
+    }
+
+    .triage-proposed {
+        flex: 2 1 0;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .triage-queue-body, .triage-proposed-body {
+        flex: 1 1 0;
+        min-height: 0;
+        align-items: stretch;
+    }
+
+    .triage-queue-body .table-scroll,
+    .triage-proposed-body .table-scroll {
+        max-height: none;
+    }
+
+    .triage-col.triage-files, .triage-col.triage-tracks {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+    }
+
+    .triage-files .table-scroll, .triage-tracks .table-scroll {
+        max-height: none;
+        flex: 1 1 0;
+        min-height: 0;
+    }
+
+    /* Spans both rows here so the button column has the full section height (the tracks row alone
+       is too short on a laptop-sized window to fit every Move button without scrolling). */
+    .triage-col.triage-controls {
+        grid-row: 1 / span 2;
+        min-height: 0;
+        max-height: 100%;
+        overflow-x: hidden;
+        overflow-y: auto;
+    }
+
+    /* Process Actions is normally a tall button; in a short section it gives up height instead of
+       being cut off by the bottom bars. */
+    .triage-proposed-actions {
+        min-height: 0;
+    }
+
+    .triage-proposed-actions .btn-process {
+        flex: 1 1 auto;
+        min-height: 2.2rem;
+    }
+}
+
 /* --- Modal dialog (Manual Match) --- */
 
 .modal-backdrop {
@@ -1115,6 +1224,11 @@ h1:focus {
     display: flex;
     flex-wrap: wrap;
     gap: 0.5rem;
+}
+
+.cover-art-show-more {
+    display: block;
+    margin: 0.5rem auto 0;
 }
 
 .cover-art-autosearch {

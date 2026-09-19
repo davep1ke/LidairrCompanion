@@ -168,14 +168,87 @@ server-side `Playback.Position` would fight the user's drag on every re-render.
 directly) and a hosted service (`AddHostedService(sp => sp.GetRequiredService<PrefetchService>())`
 — note it resolves the *same* singleton instance rather than creating a second one). It queues
 "unimported release files per queue record" and "artist release tracks per matched artist" jobs
-onto a `Channel<T>`, processed with a concurrency-2 throttle. `Import.razor` fires a refresh on
-first landing and offers a manual "Refresh" button instead of two separate load buttons.
+onto a `Channel<T>`, processed with a concurrency-2 throttle. `Import.razor` and `Home.razor` fire
+a refresh on arrival when `TriageService.NeedsRefresh` (see below), and there's a manual "Refresh"
+button instead of separate load buttons.
+
+**Freshness / "new session" rule.** `TriageService` and `PrefetchService` are singletons that
+used to keep their data for the life of the process — a page left overnight showed yesterday's
+queue. Now `TriageService.LastLoadedUtc` + `Core/Helpers/RefreshPolicy` decide: data is stale if
+never loaded, invalidated by a new sign-in (`Login.razor` calls `Triage.MarkSessionStale()`), or
+older than 6 hours (`RefreshPolicy.DefaultMaxAge`). `RefreshAsync` is the single "get current data"
+path: it calls `PrefetchService.Reset()` (drops every cache; a generation counter stops a fetch
+that was already in flight from writing a stale result back), fetches queue + artists, **runs
+auto-match itself** (there is no separate Auto Match button/Alt+3 any more), then queues
+prefetches. It's guarded so Home and Import both calling it on arrival don't double-run. An empty
+artist track list is deliberately **not cached** — a just-created artist has no albums until
+Lidarr's own metadata refresh finishes.
 
 **Gotcha already hit once:** each background job needs its own fresh `LidarrHelper` (i.e.
 `new LidarrHelper()`), not a shared `HttpClient` passed into multiple `LidarrHelper` instances —
 `LidarrHelper`'s constructor sets `_client.Timeout`, and .NET throws `InvalidOperationException` if
 you try to do that on an `HttpClient` that's already sent a request. This bit the first
 implementation and produced ~130 identical background-job failures before being caught via the log.
+
+### Import page: keyboard flow, auto-advance, multi-select
+
+- **Shortcuts**: `M` (Mark Match), `X` (Delete), `U` (Unlink) work bare *and* as Alt+key; Alt+1
+  Refresh, Alt+A Match Artist, Alt+P play/stop. Bare keys are ignored while focus is in an
+  input/textarea/select/contenteditable and on key-repeat (`keyboardShortcuts.js`), and
+  `Import.OnShortcut` ignores everything while the page is busy or the match dialog is open.
+- **Auto-advance** (`TriageService.AdvanceAfterActionAsync`, called by the page after Mark Match /
+  Unlink / Delete / Move): selects the next file that still has no decision (next after the one
+  acted on, else the first skipped one), re-sorts the tracks list for it; when the whole release is
+  handled it moves on to the **next queue record** and selects its first file. The page then
+  scrolls the tracks list to top (`_scrollAfterRender` → `scrollToTop` JS after the render — must
+  be after, or the re-sorted rows aren't in the DOM yet). Pure index maths is
+  `Core/Helpers/FileSelection.NextUnhandledIndex` (tested).
+- **Multi-select on the files list**: plain click selects; Shift-click checks the range from the
+  last anchor (`FileSelection.RangeBetween`); Ctrl/Cmd-click toggles one. "Checked" files are what
+  Delete/Unlink/Move act on. Cells are `user-select:none` so shift-click doesn't highlight text.
+
+### Non-blocking manual artist match
+
+`ApplyManualMatch` (TriageService) does **not** take the global busy lock. `ManualMatchDialog`
+closes immediately (for an artist not yet in Lidarr it hands back a placeholder `LidarrArtist` with
+`Id = 0` + the foreign id); the record is marked matched at once, and a `Task.Run` job creates the
+artist if needed, then polls (`Core/Helpers/Polling.UntilAsync`, 24×5s) until Lidarr's async
+metadata refresh has produced albums/tracks. Progress: `IsArtistPending`/`PendingArtistMessage`
+drive a ⏳ in the queue table and a note in the tracks table; `ArtistJobsChanged` /
+`ArtistReleasesReady` events fire **from the background thread**, so the page marshals with
+`InvokeAsync` before touching `ArtistReleaseTracks` (an `ObservableCollection` bound to render).
+`Artists` is swapped copy-on-write for the same reason. On failure the record's previous match is
+restored. `Import.OnInitialized` reloads the tracks if a job finished while no page was mounted.
+Live-verified against a real Lidarr with an *existing* artist (a 16s, 8,416-track fetch); the
+create-a-new-artist branch is unit-covered only via `Polling` — it was not exercised live because
+it mutates the real Lidarr.
+
+### Import page layout
+
+On desktop-sized viewports (`min-width:641px` and `min-height:620px`) `.triage-page` is a
+viewport-bounded flex column (`height: calc(100dvh - 1.1rem - 5.5rem)`; queue 3 : files+tracks 6 :
+actions 2), every list `flex:1; min-height:0; overflow:auto`, so lists grow with the window. Below
+that the older fixed `max-height`s apply and the page scrolls. The controls column spans both grid
+rows in bounded mode (otherwise the Move buttons need their own scrollbar on a laptop).
+
+### Status bar, cover-art hand-off, cookie
+
+- `StatusService` (now in **Core**, `Core/Models`, so its timing is unit-tested) auto-dismisses
+  Info/Error after `AutoDismissAfter` (2 min) using a version counter so an old message's timer
+  can't wipe a newer one; Busy is never auto-dismissed. Info messages also get a ✕ now.
+- Cover art: **Save & Finish** (saving the last missing item) and **Finish Import** both call
+  `CoverArt.Complete()`, which starts `ResumeImportAfterCoverArtAsync` fire-and-forget and
+  navigates to `/import` immediately — the busy state + status-bar summary carry progress. The old
+  "N files need cover art…" status message is gone (the page itself is the message), and the
+  status-bar cover-art link hides while you're on `/cover-art`.
+- The login cookie is `IsPersistent = true` (`Login.razor`). Without it ASP.NET issues a *session*
+  cookie regardless of `ExpireTimeSpan`, which is why the password kept being re-asked. Confirmed
+  live: cookie expiry is ~30 days out. (If it still re-prompts on TrueNAS, check `/data/keys`
+  really persists — see Docker section.)
+- Web image search: grid uses SerpApi's small `thumbnail` (`SerpApiHelper.ChooseImageUrls`), the
+  full `original` is used only for the selected preview/download; 20 shown at a time with
+  "Show more" revealing the rest of the already-fetched (single-credit) results. Remaining latency
+  is SerpApi/Google itself (~10-20s uncached) and can't be fixed on our side.
 
 ## Blazor-specific gotchas actually hit in this codebase
 
@@ -240,7 +313,7 @@ These cost real debugging time. Read before touching render logic.
 | Service | Lifetime | Why |
 |---|---|---|
 | `ILogService` | Singleton | One log stream app-wide |
-| `StatusService` | Singleton | Injected into other singletons (`TriageService`, `SiftService`) |
+| `StatusService` | Singleton | Injected into other singletons (`TriageService`, `SiftService`); lives in `Core/Models` |
 | `ThemeService` | Singleton | |
 | `IPlaybackService` | **Scoped** | Not needed by any minimal API endpoint |
 | `CoverArtGateService` | Singleton | Triage page and `/cover-art` page must see the same gate state |
@@ -287,6 +360,10 @@ dotnet test LidarrCompanion.Core.Tests
   `[assembly: CollectionBehavior(DisableTestParallelization = true)]` in
   `LidarrCompanion.Core.Tests/AssemblyInfo.cs`. Don't remove that attribute without accounting for
   the race it prevents.
+
+- Timing-based tests (`StatusServiceTests`, `PollingTests`) use millisecond delays and assert on
+  "did/didn't clear", never on speed. Pure Web-layer logic gets moved into Core to be testable:
+  `RefreshPolicy`, `FileSelection`, `Polling`, `StatusService`.
 
 **Live/manual verification**, when a change touches Blazor rendering, JS interop, or an actual
 external API (MusicBrainz, SerpApi, Lidarr): run the dev server (`dotnet run --project
@@ -377,3 +454,15 @@ restart) before ever touching the real TrueNAS target.
   the middleware just logs "Failed to determine the https port for redirect" and passes the
   request through unredirected. It's a no-op here by construction, not a bug to "fix" by wiring up
   certs — this app is meant to be reached over plain HTTP on a trusted LAN.
+
+**Dev-server gotchas when live-testing** (each cost time):
+- Run against an isolated data dir so the real `LidarrCompanion.Web/data/appsettings.json` is never
+  touched: copy it elsewhere, drop `AdminPasswordHash` (the login page then offers "set password"),
+  and start with `DataDirectory=<dir> dotnet run --no-build --urls http://127.0.0.1:5390`. Port 5299
+  is the Docker container's; the real Lidarr *is* reachable from the dev machine, so anything that
+  mutates it (creating an artist, Process Actions) must not be driven from a test.
+- Don't `pkill -f -- "--urls http://127.0.0.1:5390"` from a Bash tool call — the pattern is in the
+  shell's own command line and kills it (exit 144). Find the PID with `ss -ltnp | grep :5390`.
+- No node/pip on this machine: headless `google-chrome --remote-debugging-port=9222` plus a
+  hand-rolled stdlib-Python CDP websocket client worked fine (real mouse events via
+  `Input.dispatchMouseEvent` with `modifiers=8` for shift-click, key events for shortcuts).

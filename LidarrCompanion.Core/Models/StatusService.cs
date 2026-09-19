@@ -1,4 +1,4 @@
-namespace LidarrCompanion.Web.Services
+namespace LidarrCompanion.Models
 {
     public enum StatusKind { Idle, Info, Busy, Error }
 
@@ -8,11 +8,21 @@ namespace LidarrCompanion.Web.Services
     // SiftService (also Singletons, for the cross-scope reasons documented on TriageService) can
     // constructor-inject it directly - a Scoped registration here would hit the same captive-
     // dependency problem IJSRuntime does.
+    //
+    // Lives in Core (rather than next to the Blazor services that use it) purely so its expiry
+    // behavior can be unit-tested; it has no web dependencies.
     public class StatusService
     {
+        private int _version;
+
         public string? Message { get; private set; }
         public StatusKind Kind { get; private set; } = StatusKind.Idle;
         public bool IsBusy => Kind == StatusKind.Busy;
+
+        // Info/Error notices clear themselves after this long. Busy is never auto-dismissed - it
+        // is cleared by whichever operation set it. A property (not a constant) so tests can use a
+        // tiny value instead of waiting minutes.
+        public TimeSpan AutoDismissAfter { get; set; } = TimeSpan.FromMinutes(2);
 
         public event Action? Changed;
 
@@ -24,7 +34,20 @@ namespace LidarrCompanion.Web.Services
         {
             Message = message;
             Kind = kind;
+            var version = Interlocked.Increment(ref _version);
             Changed?.Invoke();
+
+            if (kind is StatusKind.Info or StatusKind.Error)
+                _ = ExpireAsync(version);
+        }
+
+        // The version check is what stops an older notice's timer from wiping a newer message
+        // that arrived in the meantime.
+        private async Task ExpireAsync(int version)
+        {
+            await Task.Delay(AutoDismissAfter).ConfigureAwait(false);
+            if (Volatile.Read(ref _version) == version && Kind is StatusKind.Info or StatusKind.Error)
+                Dismiss();
         }
 
         // Called at the end of a busy operation - only clears if nothing (e.g. an error) set a
@@ -35,6 +58,7 @@ namespace LidarrCompanion.Web.Services
             {
                 Message = null;
                 Kind = StatusKind.Idle;
+                Interlocked.Increment(ref _version);
                 Changed?.Invoke();
             }
         }
@@ -43,6 +67,7 @@ namespace LidarrCompanion.Web.Services
         {
             Message = null;
             Kind = StatusKind.Idle;
+            Interlocked.Increment(ref _version);
             Changed?.Invoke();
         }
     }

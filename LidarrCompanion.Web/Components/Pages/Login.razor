@@ -55,6 +55,7 @@
 @code {
     [CascadingParameter] private HttpContext HttpContext { get; set; } = default!;
     [Inject] private NavigationManager NavigationManager { get; set; } = default!;
+    [Inject] private LidarrCompanion.Web.Services.TriageService Triage { get; set; } = default!;
 
     // The property name here IS the form field name prefix the framework binds from (the markup
     // below posts fields named "LoginForm.Password" etc.), so it can't be renamed independently
@@ -103,7 +104,16 @@
     private async Task SignInAndRedirect()
     {
         var identity = new ClaimsIdentity(new[] { new Claim(ClaimTypes.Name, "admin") }, CookieAuthenticationDefaults.AuthenticationScheme);
-        await HttpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(identity));
+
+        // IsPersistent is what turns this into a real cookie with an expiry (the 30-day sliding
+        // window configured in Program.cs). Without it the cookie is a session cookie that the
+        // browser discards on close - which is why the password kept being asked for again.
+        var properties = new AuthenticationProperties { IsPersistent = true };
+        await HttpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(identity), properties);
+
+        // A new sign-in is a new session: make the triage screen re-fetch instead of showing
+        // whatever an earlier session left behind.
+        Triage.MarkSessionStale();
         NavigationManager.NavigateTo("/", forceLoad: true);
     }
 

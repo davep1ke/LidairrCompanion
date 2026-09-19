@@ -270,28 +270,17 @@
             return;
         }
 
-        _isBusy = true;
-        _statusMessage = $"Importing {_selected.SourceType.ToString().ToLowerInvariant()} artist...";
-        try
+        // Not-yet-in-Lidarr artist: hand back a placeholder (Id 0, carrying the foreign id) and
+        // close straight away. Creating it in Lidarr and waiting for its albums to appear can take
+        // a minute, so TriageService does that in the background rather than holding this dialog
+        // (and the whole page behind it) open - see TriageService.ApplyManualMatch.
+        var artistName = _selected.DisplayName;
+        await OnClosed.InvokeAsync(new LidarrArtist
         {
-            var artistName = _selected.DisplayName;
-            var foreignId = !string.IsNullOrWhiteSpace(_selected.ForeignId) ? _selected.ForeignId : Guid.NewGuid().ToString();
-            var folder = string.IsNullOrWhiteSpace(artistName) ? "Unknown" : artistName;
-
-            var rootFolder = AppSettings.GetValue(SettingKey.DefaultArtistRootFolder);
-            var qualityProfileId = AppSettings.Current.GetTyped<int>(SettingKey.DefaultArtistQualityProfileId);
-            var metadataProfileId = AppSettings.Current.GetTyped<int>(SettingKey.DefaultArtistMetadataProfileId);
-
-            var lidarr = new LidarrHelper();
-            var created = await lidarr.CreateArtistAsync(artistName, foreignId, folder, rootFolder, qualityProfileId, metadataProfileId, monitored: true, searchForMissingAlbums: true);
-
-            await OnClosed.InvokeAsync(created ?? new LidarrArtist { ArtistName = artistName, Id = 0 });
-        }
-        catch (Exception ex)
-        {
-            _statusMessage = $"Failed to import artist: {ex.Message}";
-            _isBusy = false;
-        }
+            Id = 0,
+            ArtistName = artistName,
+            ForeignArtistId = _selected.ForeignId
+        });
     }
 
     private async Task Cancel()

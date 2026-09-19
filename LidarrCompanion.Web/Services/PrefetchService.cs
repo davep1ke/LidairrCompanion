@@ -26,8 +26,20 @@ namespace LidarrCompanion.Web.Services
         private readonly ConcurrentDictionary<string, List<LidarrArtistReleaseTrack>> _tracksByArtistName = new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, byte> _queued = new(StringComparer.OrdinalIgnoreCase);
         private readonly SemaphoreSlim _concurrency = new(MaxConcurrency, MaxConcurrency);
+        private int _generation;
 
         private record PrefetchJob(PrefetchJobType Type, LidarrQueueRecord? Record, LidarrArtist? Artist);
+
+        // Drops everything cached so far. Bumping the generation means a fetch that was already in
+        // flight when this ran can't write its (now stale) result back into the freshly-emptied
+        // cache.
+        public void Reset()
+        {
+            Interlocked.Increment(ref _generation);
+            _filesByOutputPath.Clear();
+            _tracksByArtistName.Clear();
+            _queued.Clear();
+        }
 
         public void EnqueueQueueRecordFiles(LidarrQueueRecord record)
         {
@@ -58,9 +70,11 @@ namespace LidarrCompanion.Web.Services
             if (_filesByOutputPath.TryGetValue(record.OutputPath, out var cached))
                 return cached;
 
+            var generation = Volatile.Read(ref _generation);
             var lidarr = new LidarrHelper();
             var files = (await lidarr.GetFilesInReleaseAsync(record.OutputPath)).ToList();
-            _filesByOutputPath[record.OutputPath] = files;
+            if (generation == Volatile.Read(ref _generation))
+                _filesByOutputPath[record.OutputPath] = files;
             return files;
         }
 
@@ -70,9 +84,18 @@ namespace LidarrCompanion.Web.Services
             if (_tracksByArtistName.TryGetValue(key, out var cached))
                 return cached;
 
+            var generation = Volatile.Read(ref _generation);
             var lidarr = new LidarrHelper();
             var tracks = await FetchArtistReleaseTracksAsync(artist, lidarr);
-            _tracksByArtistName[key] = tracks;
+
+            // An empty list is not cached: an artist that was only just added to Lidarr has no
+            // albums until Lidarr's own metadata refresh finishes, and caching that emptiness would
+            // keep showing "no releases" for the artist until the next full refresh.
+            if (tracks.Count > 0 && generation == Volatile.Read(ref _generation))
+                _tracksByArtistName[key] = tracks;
+            else if (tracks.Count == 0)
+                _queued.TryRemove("artist:" + key, out _);
+
             return tracks;
         }
 

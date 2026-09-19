@@ -60,19 +60,23 @@ else
 
                 @* Results scroll in their own fixed-height frame, with the cover art box and the
                    selected-result preview always visible below - so paging through a long result
-                   list never pushes the Save/Reset/Skip/Complete buttons off screen. *@
+                   list never pushes the Save/Reset/Skip/Finish buttons off screen. *@
                 <div class="cover-art-results-frame">
                     @if (_manualResults.Count > 0)
                     {
                         <div class="cover-art-results">
-                            @foreach (var r in _manualResults)
+                            @foreach (var r in _manualResults.Take(_manualVisible))
                             {
                                 <div class="cover-art-browse-item" @onclick="() => LoadPreview(r)">
-                                    <img src="@r.ThumbnailUrl" title="@r.Title" alt="@r.Title" class="cover-art-result-thumb" />
+                                    <img src="@r.ThumbnailUrl" title="@r.Title" alt="@r.Title" class="cover-art-result-thumb" loading="lazy" decoding="async" />
                                     <span class="cover-art-browse-title">@(r.Width is { } w && r.Height is { } h ? $"{w} × {h}" : string.Empty)</span>
                                 </div>
                             }
                         </div>
+                        @if (_manualVisible < _manualResults.Count)
+                        {
+                            <button class="cover-art-show-more" @onclick="ShowMoreManual">Show more (@(_manualResults.Count - _manualVisible) left)</button>
+                        }
                     }
 
                     @if (_discogsResults.Count > 0)
@@ -138,7 +142,7 @@ else
                     <button @onclick="SaveAndNext" disabled="@(_stagedImage is null || _isBusy)">@(_isLastMissing ? "Save & Finish" : "Save & Next")</button>
                     <button @onclick="ResetImage" disabled="@(_stagedImage is null || _isBusy)">Reset</button>
                     <button @onclick="SkipToNext" disabled="@_isBusy">Skip</button>
-                    <button @onclick="Complete" disabled="@_isBusy">Complete</button>
+                    <button @onclick="Complete" disabled="@_isBusy" title="Process the import now. Files still without cover art are imported without it.">Finish Import</button>
                     <button @onclick="AbortImport" disabled="@_isBusy" class="cover-art-abort">Abort Import</button>
                 </div>
             }
@@ -157,6 +161,12 @@ else
     private byte[]? _stagedImage;
     private string? _stagedMimeType;
     private List<SerpApiImageResult> _manualResults = new();
+
+    // One SerpApi call already returns up to ~100 results (a single credit), but rendering them
+    // all at once made the grid slow to fill in - so only a page is shown, with "Show more" for
+    // the rest (already fetched, so revealing them is free and instant).
+    private const int ManualPageSize = 20;
+    private int _manualVisible = ManualPageSize;
     private List<DiscogsRelease> _discogsResults = new();
 
     // Side preview: a shared "load it, then drag it onto the target" step for both result grids,
@@ -175,7 +185,9 @@ else
     private IJSObjectReference? _pasteModule;
     private DotNetObjectReference<CoverArt>? _selfRef;
 
-    private bool _isLastMissing => Gate.PendingItems.Count(i => !i.HasCoverArt) <= 1;
+    // True when saving the staged image would leave nothing else without art - the moment the
+    // Save button turns into "Save & Finish" and hands straight over to processing.
+    private bool _isLastMissing => Gate.PendingItems.All(i => i.HasCoverArt || i == _current);
 
     private string? ExistingImageDataUri => _current?.CoverArtPreview is { } bytes
         ? $"data:{_current.CoverArtMimeType ?? "image/jpeg"};base64,{Convert.ToBase64String(bytes)}"
@@ -285,7 +297,7 @@ else
     {
         if (_isBusy || string.IsNullOrWhiteSpace(_searchTerm)) return;
         _isBusy = true;
-        _statusMessage = $"Searching web images for: {_searchTerm}";
+        _statusMessage = $"Searching web images for: {_searchTerm} (Google can take 10-20 seconds the first time a query is run)";
         _manualResults.Clear();
         _discogsResults.Clear();
         StateHasChanged();
@@ -301,6 +313,7 @@ else
 
             var serp = new SerpApiHelper();
             _manualResults = await serp.SearchImagesAsync(apiKey, _searchTerm);
+            _manualVisible = ManualPageSize;
             _statusMessage = _manualResults.Count == 0 ? "No web image results found." : string.Empty;
         }
         catch (Exception ex)
@@ -313,6 +326,8 @@ else
             await InvokeAsync(StateHasChanged);
         }
     }
+
+    private void ShowMoreManual() => _manualVisible = Math.Min(_manualVisible + ManualPageSize, _manualResults.Count);
 
     // Tier 3: manual "show everything by this artist" browse, for when even a structured
     // artist+album search finds nothing - lets the user pick the right release visually instead
@@ -447,14 +462,19 @@ else
         InvokeAsync(StateHasChanged);
     }
 
-    private void SaveAndNext()
+    private async Task SaveAndNext()
     {
         if (_current is null || _stagedImage is null) return;
 
         try
         {
+            var finishing = _isLastMissing;
             Gate.SaveCoverArt(_current, _stagedImage, _stagedMimeType ?? "image/jpeg");
-            SelectFirstMissingOrFirst();
+
+            if (finishing)
+                await Complete();
+            else
+                SelectFirstMissingOrFirst();
         }
         catch (Exception ex)
         {
@@ -488,15 +508,20 @@ else
             SelectItem(next);
     }
 
-    private async Task Complete()
+    // Hands the import back to the pipeline and returns to the Import page straight away rather
+    // than making the user sit on this page while it runs - TriageService's busy state (shown on
+    // the Import page, which subscribes to it) and the status bar's result message carry the
+    // progress from here. The pipeline's own start-up (taking the parked actions out of the gate)
+    // happens synchronously before the navigation, so the gate is already closed by the time the
+    // Import page renders.
+    private Task Complete()
     {
-        if (_isBusy) return;
+        if (_isBusy) return Task.CompletedTask;
         _isBusy = true;
-        StateHasChanged();
 
-        // Result is reported via the status bar (see TriageService.PostImportSummary), not here.
-        await Triage.ResumeImportAfterCoverArtAsync();
+        _ = Triage.ResumeImportAfterCoverArtAsync();
         Nav.NavigateTo("/import");
+        return Task.CompletedTask;
     }
 
     private async Task AbortImport()

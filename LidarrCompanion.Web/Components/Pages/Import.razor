@@ -52,16 +52,21 @@
                                 <td>@record.Title</td>
                                 <td>@record.OutputPath</td>
                                 <td>@record.DownloadId</td>
-                                <td>@record.MatchedArtist</td>
+                                <td>
+                                    @record.MatchedArtist
+                                    @if (Triage.IsArtistPending(record.MatchedArtist))
+                                    {
+                                        <span class="pending-indicator" title="@Triage.PendingArtistMessage(record.MatchedArtist)">⏳</span>
+                                    }
+                                </td>
                             </tr>
                         }
                     </tbody>
                 </table>
             </div>
             <div class="triage-queue-actions">
-                <button class="action-btn" @onclick="Refresh" title="Alt+1">Refresh</button>
+                <button class="action-btn" @onclick="Refresh" title="Reload the queue and artists from Lidarr, and auto-match releases to artists (Alt+1)">Refresh</button>
                 <button class="action-btn" @onclick="OpenManualMatch" title="Alt+A">Match Artist</button>
-                <button class="action-btn" @onclick="AutoMatch" title="Alt+3">Auto Match</button>
             </div>
         </div>
     </section>
@@ -86,8 +91,8 @@
                                 <td>
                                     <input type="checkbox" checked="@Triage.CheckedFileIds.Contains(file.Id)" @onchange="e => ToggleFileChecked(file, (bool)(e.Value ?? false))" />
                                 </td>
-                                <td @onclick="() => SelectFile(file)">@file.Name</td>
-                                <td @onclick="() => SelectFile(file)">@file.Path</td>
+                                <td @onclick="e => SelectFile(file, e)">@file.Name</td>
+                                <td @onclick="e => SelectFile(file, e)">@file.Path</td>
                             </tr>
                         }
                     </tbody>
@@ -101,6 +106,10 @@
                 <table class="triage-table">
                     <thead><tr><th>Type</th><th>Release</th><th>Track</th><th>Exists?</th><th>Score</th></tr></thead>
                     <tbody>
+                        @if (Triage.PendingArtistMessage(Triage.SelectedQueueRecord?.MatchedArtist) is { } pendingMessage)
+                        {
+                            <tr><td colspan="5" class="pending-note">⏳ @pendingMessage You can carry on with another release meanwhile.</td></tr>
+                        }
                         @foreach (var track in Triage.ArtistReleaseTracks)
                         {
                             <tr class="@(track == Triage.SelectedTrack ? "row-selected" : "") @(track.IsAssigned ? "row-disabled" : "")"
@@ -127,9 +136,9 @@
                 <button class="sort-btn @(_sortMode == "by Best" ? "active" : "")" title="Sort by Best Match" @onclick='() => SetSort("by Best")'>⭐</button>
             </div>
 
-            <button class="action-btn" @onclick="MarkMatch" title="Alt+M">Mark Match</button>
-            <button class="action-btn" @onclick="() => CreateProposal(ProposalActionType.Unlink)">Unlink File</button>
-            <button class="action-btn" @onclick="() => CreateProposal(ProposalActionType.Delete)">Delete File</button>
+            <button class="action-btn" @onclick="MarkMatch" title="M (or Alt+M)">Mark Match (M)</button>
+            <button class="action-btn" @onclick="() => ProposeAndAdvance(ProposalActionType.Unlink)" title="U (or Alt+U)">Unlink File (U)</button>
+            <button class="action-btn" @onclick="() => ProposeAndAdvance(ProposalActionType.Delete)" title="X (or Alt+X)">Delete File (X)</button>
 
             @foreach (var dest in Triage.Destinations)
             {
@@ -201,9 +210,44 @@
     protected override void OnInitialized()
     {
         Status.Changed += OnStatusChanged;
+        Triage.ArtistJobsChanged += OnArtistJobsChanged;
+        Triage.ArtistReleasesReady += OnArtistReleasesReady;
+
+        // Landing here with nothing loaded, data from before this sign-in, or data older than
+        // RefreshPolicy.DefaultMaxAge: fetch it (and auto-match) rather than showing an empty or
+        // stale queue. Completion re-renders via Status.Changed above.
+        if (Triage.NeedsRefresh)
+            _ = Triage.RefreshAsync();
+        else if (Triage.SelectedQueueRecord?.MatchedArtist is { Length: > 0 } matched
+            && Triage.ArtistReleaseTracks.Count == 0 && !Triage.IsArtistPending(matched))
+            _ = ReloadSelectedArtistReleasesAsync(matched);
+    }
+
+    // A background manual-match job can finish while no Import page is mounted (the user was on
+    // another page, or reloaded), in which case nothing was listening for it - the tracks are
+    // cached but this component's view of them is empty until something asks again.
+    private async Task ReloadSelectedArtistReleasesAsync(string artistName)
+    {
+        await Triage.RefreshSelectedArtistReleasesAsync(artistName);
+        await InvokeAsync(StateHasChanged);
     }
 
     private void OnStatusChanged() => InvokeAsync(StateHasChanged);
+    private void OnArtistJobsChanged() => InvokeAsync(StateHasChanged);
+
+    // A background manual-match job finished (see TriageService.ApplyManualMatch). Runs on this
+    // circuit's sync context so the tracks collection isn't touched while a render is reading it.
+    private void OnArtistReleasesReady(string artistName) => InvokeAsync(async () =>
+    {
+        await Triage.RefreshSelectedArtistReleasesAsync(artistName);
+        StateHasChanged();
+    });
+
+    // Set whenever selection moves to a different file, so that once the re-sorted tracks list has
+    // rendered it's scrolled back to the top (and the newly selected file kept in view) - otherwise
+    // the best matches for the new file sit above wherever the list happened to be scrolled.
+    private bool _scrollAfterRender;
+    private LidarrManualImportFile? _anchorFile;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -213,23 +257,36 @@
             _shortcutsModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/keyboardShortcuts.js");
             await _shortcutsModule.InvokeVoidAsync("register", _selfRef);
         }
+
+        if (_scrollAfterRender && _shortcutsModule is not null)
+        {
+            _scrollAfterRender = false;
+            await _shortcutsModule.InvokeVoidAsync("scrollToTop", ".triage-tracks .table-scroll");
+            await _shortcutsModule.InvokeVoidAsync("scrollSelectedIntoView", ".triage-files .table-scroll", "tr.row-selected");
+        }
     }
 
     [JSInvokable]
     public async Task OnShortcut(string key)
     {
+        // The page is inert while busy (pointer-events:none) and while the match dialog is open;
+        // keyboard input shouldn't be able to act on it either.
+        if (Triage.IsBusy || _showManualMatch) return;
+
         switch (key)
         {
             case "1": await Refresh(); break;
-            case "3": await AutoMatch(); break;
             case "a": OpenManualMatch(); break;
             case "m": await MarkMatch(); break;
+            case "x": await ProposeAndAdvance(ProposalActionType.Delete); break;
+            case "u": await ProposeAndAdvance(ProposalActionType.Unlink); break;
             case "p": await PlayTrack(); break;
         }
+
+        StateHasChanged();
     }
 
     private async Task Refresh() { await Triage.RefreshAsync(); StateHasChanged(); }
-    private async Task AutoMatch() { await Triage.AutoMatchAsync(); StateHasChanged(); }
 
     private async Task SelectQueueRecord(LidarrQueueRecord record)
     {
@@ -237,10 +294,28 @@
         StateHasChanged();
     }
 
-    private void SelectFile(LidarrManualImportFile file)
+    // Plain click: select the file (drives the tracks list's "best match" sort). Shift-click:
+    // check every file from the last-clicked one to this one. Ctrl/Cmd-click: toggle this file's
+    // check without disturbing the others. Checked files are what Delete/Unlink/Move act on.
+    private void SelectFile(LidarrManualImportFile file, MouseEventArgs e)
     {
+        if (e.ShiftKey)
+        {
+            var range = FileSelection.RangeBetween(Triage.ManualImportFiles, _anchorFile ?? Triage.SelectedFile, file);
+            Triage.CheckedFileIds.Clear();
+            foreach (var f in range)
+                Triage.CheckedFileIds.Add(f.Id);
+        }
+        else
+        {
+            if (e.CtrlKey || e.MetaKey)
+                ToggleFileChecked(file, !Triage.CheckedFileIds.Contains(file.Id));
+            _anchorFile = file;
+        }
+
         Triage.SelectedFile = file;
         Triage.ApplySort(_sortMode);
+        _scrollAfterRender = true;
     }
 
     private void ToggleFileChecked(LidarrManualImportFile file, bool isChecked)
@@ -259,25 +334,41 @@
 
     private async Task MarkMatch()
     {
+        var acted = Triage.SelectedFile;
         var result = Triage.MarkMatch();
         if (result == MarkMatchResult.NeedsOverwriteConfirmation)
         {
             var confirmed = await JS.InvokeAsync<bool>("confirm", "Selected track already has a file. Assigning will overwrite it. Continue?");
-            if (confirmed) Triage.MarkMatch(overwriteConfirmed: true);
+            if (confirmed) result = Triage.MarkMatch(overwriteConfirmed: true);
         }
+
+        if (result == MarkMatchResult.Success)
+            await Advance(acted);
+
         StateHasChanged();
     }
 
-    private void CreateProposal(ProposalActionType kind)
+    private async Task ProposeAndAdvance(ProposalActionType kind)
     {
-        Triage.CreateProposal(kind);
+        var acted = Triage.CreateProposal(kind);
+        if (acted.Count > 0)
+            await Advance(acted[^1]);
         StateHasChanged();
     }
 
-    private void MoveToDestination(ImportDestination dest)
+    private async Task MoveToDestination(ImportDestination dest)
     {
-        Triage.MoveToDestination(dest);
+        var acted = Triage.MoveToDestination(dest);
+        if (acted.Count > 0)
+            await Advance(acted[^1]);
         StateHasChanged();
+    }
+
+    private async Task Advance(LidarrManualImportFile? acted)
+    {
+        if (await Triage.AdvanceAfterActionAsync(acted))
+            _scrollAfterRender = true;
+        _anchorFile = Triage.SelectedFile;
     }
 
     private void Unselect()
@@ -450,19 +541,21 @@
         _showManualMatch = true;
     }
 
-    private async Task OnManualMatchClosed(LidarrArtist? selected)
+    // Closes immediately: TriageService.ApplyManualMatch marks the release matched and does the
+    // slow part (adding the artist to Lidarr, waiting for its releases) in the background, so the
+    // user can go straight on to the next release.
+    private void OnManualMatchClosed(LidarrArtist? selected)
     {
         _showManualMatch = false;
-        if (selected is not null)
-        {
-            await Triage.ApplyManualMatchAsync(selected);
-        }
-        StateHasChanged();
+        if (selected is not null && Triage.SelectedQueueRecord is { } record)
+            Triage.ApplyManualMatch(record, selected);
     }
 
     public async ValueTask DisposeAsync()
     {
         Status.Changed -= OnStatusChanged;
+        Triage.ArtistJobsChanged -= OnArtistJobsChanged;
+        Triage.ArtistReleasesReady -= OnArtistReleasesReady;
         _selfRef?.Dispose();
         if (_shortcutsModule is not null)
         {

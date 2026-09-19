@@ -58,14 +58,18 @@
                 @if (_manualResults.Count > 0)
                 {
                     <div class="cover-art-results">
-                        @foreach (var r in _manualResults)
+                        @foreach (var r in _manualResults.Take(_manualVisible))
                         {
                             <div class="cover-art-browse-item" @onclick="() => LoadPreview(r)">
-                                <img src="@r.ThumbnailUrl" title="@r.Title" alt="@r.Title" class="cover-art-result-thumb" />
+                                <img src="@r.ThumbnailUrl" title="@r.Title" alt="@r.Title" class="cover-art-result-thumb" loading="lazy" decoding="async" />
                                 <span class="cover-art-browse-title">@(r.Width is { } w && r.Height is { } h ? $"{w} × {h}" : string.Empty)</span>
                             </div>
                         }
                     </div>
+                    @if (_manualVisible < _manualResults.Count)
+                    {
+                        <button class="cover-art-show-more" @onclick="ShowMoreManual">Show more (@(_manualResults.Count - _manualVisible) left)</button>
+                    }
                 }
 
                 @if (_discogsResults.Count > 0)
@@ -160,6 +164,10 @@
     private byte[]? _stagedImage;
     private string? _stagedMimeType;
     private List<SerpApiImageResult> _manualResults = new();
+
+    // Mirrors CoverArt.razor: show a page of the already-fetched results, "Show more" for the rest.
+    private const int ManualPageSize = 20;
+    private int _manualVisible = ManualPageSize;
     private List<DiscogsRelease> _discogsResults = new();
 
     private string? _previewSrc;
@@ -278,7 +286,7 @@
     {
         if (_isBusy || string.IsNullOrWhiteSpace(_searchTerm)) return;
         _isBusy = true;
-        _statusMessage = $"Searching web images for: {_searchTerm}";
+        _statusMessage = $"Searching web images for: {_searchTerm} (Google can take 10-20 seconds the first time a query is run)";
         _manualResults.Clear();
         _discogsResults.Clear();
         StateHasChanged();
@@ -294,6 +302,7 @@
 
             var serp = new SerpApiHelper();
             _manualResults = await serp.SearchImagesAsync(apiKey, _searchTerm);
+            _manualVisible = ManualPageSize;
             _statusMessage = _manualResults.Count == 0 ? "No web image results found." : string.Empty;
         }
         catch (Exception ex)
@@ -306,6 +315,8 @@
             await InvokeAsync(StateHasChanged);
         }
     }
+
+    private void ShowMoreManual() => _manualVisible = Math.Min(_manualVisible + ManualPageSize, _manualResults.Count);
 
     private async Task BrowseByArtist()
     {

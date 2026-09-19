@@ -1,27 +1,37 @@
 @implements IDisposable
 @inject StatusService Status
 @inject CoverArtGateService CoverArtGate
+@inject NavigationManager Nav
 
 <div class="status-bar status-bar-@Status.Kind.ToString().ToLowerInvariant()">
     <span class="status-bar-message">@Status.Message</span>
-    @if (Status.Kind == StatusKind.Error)
+    @if (Status.Kind is StatusKind.Error or StatusKind.Info)
     {
         <button class="status-bar-dismiss" @onclick="Dismiss">✕</button>
     }
-    @if (CoverArtGate.HasPending)
+    @if (CoverArtGate.HasPending && !OnCoverArtPage)
     {
         <a class="status-bar-cover-art-link" href="/cover-art">@CoverArtGate.MissingCount file(s) need cover art - resolve now</a>
     }
 </div>
 
 @code {
+    // The link is a way back for someone who navigated away mid-gate; on the page it points at
+    // it's just noise.
+    private bool OnCoverArtPage =>
+        Nav.ToBaseRelativePath(Nav.Uri).StartsWith("cover-art", StringComparison.OrdinalIgnoreCase);
+
     protected override void OnInitialized()
     {
         Status.Changed += OnChanged;
         CoverArtGate.Changed += OnChanged;
+        Nav.LocationChanged += OnLocationChanged;
     }
 
     private void OnChanged() => InvokeAsync(StateHasChanged);
+
+    private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e) =>
+        InvokeAsync(StateHasChanged);
 
     private void Dismiss() => Status.Dismiss();
 
@@ -29,5 +39,6 @@
     {
         Status.Changed -= OnChanged;
         CoverArtGate.Changed -= OnChanged;
+        Nav.LocationChanged -= OnLocationChanged;
     }
 }
