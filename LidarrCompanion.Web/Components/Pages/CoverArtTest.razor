@@ -55,7 +55,14 @@
                selected-result preview always visible below - so paging through a long result
                list never pushes the thing you're actually trying to look at off screen. *@
             <div class="cover-art-results-frame">
-                @if (_manualResults.Count > 0)
+                @if (_isSearching)
+                {
+                    <div class="cover-art-searching">
+                        <img src="/favicon.png" alt="" class="cover-art-searching-logo" />
+                        <span>Searching...</span>
+                    </div>
+                }
+                else if (_manualResults.Count > 0)
                 {
                     <div class="cover-art-results">
                         @foreach (var r in _manualResults.Take(_manualVisible))
@@ -160,6 +167,7 @@
     private string _searchTerm = string.Empty;
     private string _statusMessage = string.Empty;
     private bool _isBusy;
+    private bool _isSearching;
     private bool _autoSearchEnabled = AppSettings.Current.GetTyped<bool>(SettingKey.AutoSearchCoverArt);
     private byte[]? _stagedImage;
     private string? _stagedMimeType;
@@ -258,6 +266,7 @@
         }
 
         _isBusy = true;
+        _isSearching = true;
         _statusMessage = "Searching Discogs...";
         _discogsResults.Clear();
         _manualResults.Clear();
@@ -278,6 +287,7 @@
         finally
         {
             _isBusy = false;
+            _isSearching = false;
             await InvokeAsync(StateHasChanged);
         }
     }
@@ -286,6 +296,7 @@
     {
         if (_isBusy || string.IsNullOrWhiteSpace(_searchTerm)) return;
         _isBusy = true;
+        _isSearching = true;
         _statusMessage = $"Searching web images for: {_searchTerm}";
         _manualResults.Clear();
         _discogsResults.Clear();
@@ -312,6 +323,7 @@
         finally
         {
             _isBusy = false;
+            _isSearching = false;
             await InvokeAsync(StateHasChanged);
         }
     }
@@ -335,6 +347,7 @@
         }
 
         _isBusy = true;
+        _isSearching = true;
         _statusMessage = $"Browsing Discogs for '{_searchTerm}'...";
         _discogsResults.Clear();
         _manualResults.Clear();
@@ -355,6 +368,7 @@
         finally
         {
             _isBusy = false;
+            _isSearching = false;
             await InvokeAsync(StateHasChanged);
         }
     }

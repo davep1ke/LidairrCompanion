@@ -421,6 +421,14 @@ stranded (Back is disabled with no current track). The wrap-on-removal path is n
   full `original` is used only for the selected preview/download; 20 shown at a time with
   "Show more" revealing the rest of the already-fetched (single-credit) results. Remaining latency
   is SerpApi/Google itself (~10-20s uncached) and can't be fixed on our side.
+- **`.cover-art-results-frame` shows a spinning app-logo placeholder (`.cover-art-searching`,
+  `/favicon.png` + a CSS `@keyframes` rotation) while `SearchDiscogs`/`SearchManual`/
+  `BrowseByArtist` is in flight**, driven by a dedicated `_isSearching` flag — deliberately
+  separate from the page's general `_isBusy` (which is also true during e.g. `CommitPreview`, when
+  showing "searching" would be wrong). All three search methods set both flags together and clear
+  both in their `finally`. `CoverArtTest.razor` has the identical change (parallel copy, see below
+  — kept in sync). Live-verified with a deliberately uncached SerpApi query to actually catch the
+  spinner mid-flight, not just a fast/cached one.
 
 ### Cover-art save and MP3s TagLib can't open
 
@@ -620,6 +628,20 @@ restart) before ever touching the real TrueNAS target.
   where *nothing* is clickable. Verify any Dockerfile change with
   `docker exec <c> grep -o 'blazor\.web[^"]*\.js' /app/LidarrCompanion.Web.staticwebassets.endpoints.json`
   (should list `blazor.web.js`), and use `docker compose build --no-cache` when checking.
+- **`docker compose build`'s reported success does not prove the running container has the latest
+  code — verify content, not the build log.** Found live: the deployed image was stuck on a build
+  from 4 days (and ~10 commits) earlier despite several `docker compose build && docker compose
+  up -d` runs in between each reporting a normal "Image ... Built" success line — root cause not
+  fully pinned down (BuildKit cache should invalidate on real `COPY` content changes; it didn't
+  here). `docker compose build --no-cache` is what actually produced a fresh image (confirmed via
+  the new image's own `docker images` timestamp jumping to "now"). **After any deploy that's meant
+  to matter, verify the *content* actually changed** — don't trust the build/restart output alone.
+  The reliable way without the real admin password (which this session doesn't have): static
+  assets are reachable unauthenticated (`FallbackPolicy` exempts them), so
+  `curl http://host:5299/app.css | grep '<a CSS rule known to be in the latest commit>'` or the
+  same against `/js/keyboardShortcuts.js` proves the deployed build's age directly. `docker inspect
+  <image> --format '{{.Created}}'` compared against the latest commit time is a good early warning
+  but isn't sufficient on its own — content-check it.
 - **Deploying to TrueNAS (custom YAML) — the two mistakes already made once:** the port mapping's
   container side must be `8080` (`'3010:8080'`, not `'3010:3010'`), and a `/data` volume is
   mandatory (settings, admin password hash, login keys and logs all live there; without it they

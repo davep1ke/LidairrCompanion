@@ -1233,6 +1233,29 @@ h1:focus {
     gap: 0.5rem;
 }
 
+/* Shown in .cover-art-results-frame in place of results while a search is actually in flight. */
+.cover-art-searching {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    height: 100%;
+    min-height: 6rem;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+.cover-art-searching-logo {
+    width: 2.5rem;
+    height: 2.5rem;
+    animation: cover-art-searching-spin 1.4s linear infinite;
+}
+
+@keyframes cover-art-searching-spin {
+    to { transform: rotate(360deg); }
+}
+
 .cover-art-show-more {
     display: block;
     margin: 0.5rem auto 0;

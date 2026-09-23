@@ -62,7 +62,14 @@ else
                    selected-result preview always visible below - so paging through a long result
                    list never pushes the Save/Reset/Skip/Finish buttons off screen. *@
                 <div class="cover-art-results-frame">
-                    @if (_manualResults.Count > 0)
+                    @if (_isSearching)
+                    {
+                        <div class="cover-art-searching">
+                            <img src="/favicon.png" alt="" class="cover-art-searching-logo" />
+                            <span>Searching...</span>
+                        </div>
+                    }
+                    else if (_manualResults.Count > 0)
                     {
                         <div class="cover-art-results">
                             @foreach (var r in _manualResults.Take(_manualVisible))
@@ -155,6 +162,7 @@ else
     private string _searchTerm = string.Empty;
     private string _statusMessage = string.Empty;
     private bool _isBusy;
+    private bool _isSearching;
     // Persisted (Settings > CoverArt) rather than session-only, so the preference sticks across
     // visits instead of resetting to off every time this page loads.
     private bool _autoSearchEnabled = AppSettings.Current.GetTyped<bool>(SettingKey.AutoSearchCoverArt);
@@ -268,6 +276,7 @@ else
         }
 
         _isBusy = true;
+        _isSearching = true;
         _statusMessage = "Searching Discogs...";
         _discogsResults.Clear();
         _manualResults.Clear();
@@ -288,6 +297,7 @@ else
         finally
         {
             _isBusy = false;
+            _isSearching = false;
             await InvokeAsync(StateHasChanged);
         }
     }
@@ -297,6 +307,7 @@ else
     {
         if (_isBusy || string.IsNullOrWhiteSpace(_searchTerm)) return;
         _isBusy = true;
+        _isSearching = true;
         _statusMessage = $"Searching web images for: {_searchTerm}";
         _manualResults.Clear();
         _discogsResults.Clear();
@@ -323,6 +334,7 @@ else
         finally
         {
             _isBusy = false;
+            _isSearching = false;
             await InvokeAsync(StateHasChanged);
         }
     }
@@ -351,6 +363,7 @@ else
         // Uses whatever is actually in the search box, not the file's raw artist tag - so
         // correcting a mistagged/misspelled artist there before clicking actually takes effect.
         _isBusy = true;
+        _isSearching = true;
         _statusMessage = $"Browsing Discogs for '{_searchTerm}'...";
         _discogsResults.Clear();
         _manualResults.Clear();
@@ -371,6 +384,7 @@ else
         finally
         {
             _isBusy = false;
+            _isSearching = false;
             await InvokeAsync(StateHasChanged);
         }
     }
