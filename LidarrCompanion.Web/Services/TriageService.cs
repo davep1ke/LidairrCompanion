@@ -1069,6 +1069,90 @@ namespace LidarrCompanion.Web.Services
             return summary;
         }
 
+        // Restores a settled-Failed VerifyImport action's file from its backup copy back into the
+        // import folder, so it can go through a fresh Import rather than endlessly re-polling a
+        // Lidarr track association that never happened. Scoped to VerifyImport specifically - by
+        // the time one of these exists its source file has already been handed to Lidarr and is
+        // gone from where it started, unlike a failed Import/Unlink/Delete/Move (whose source file
+        // typically never moved in the first place, so there's nothing to restore). Real incident:
+        // two releases matched to the same album, imported back-to-back - one verified fine, the
+        // other's VerifyImport exhausted its retries because Lidarr never actually attached the
+        // file to its track, even though the import command itself reported success.
+        public async Task RestoreFailedImportsAsync()
+        {
+            var toRestore = ProposedActions
+                .Where(a => a.Action == ProposalActionType.VerifyImport && a.Status == ImportActionStatus.Failed)
+                .ToList();
+
+            if (toRestore.Count == 0)
+            {
+                _status.ShowError("No failed imports to restore.");
+                return;
+            }
+
+            await RunBusyAsync("Restoring failed imports from backup...", async () =>
+            {
+                var backupRoot = AppSettings.GetValue(SettingKey.BackupRootFolder);
+                if (string.IsNullOrWhiteSpace(backupRoot))
+                {
+                    _status.ShowError("No backup folder configured - nothing to restore from.");
+                    return;
+                }
+
+                int restored = 0, alreadyPresent = 0, noBackup = 0;
+
+                foreach (var action in toRestore)
+                {
+                    // Same folder-naming fallback BackupReleaseGroup used when it wrote this file -
+                    // see BackupPathHelper for why both sides must agree on it.
+                    var folderName = string.IsNullOrWhiteSpace(action.OriginalRelease)
+                        ? Path.GetFileName(action.Path) : action.OriginalRelease;
+                    var backupFile = BackupPathHelper.ComputeBackupFilePath(backupRoot, folderName, action.Path);
+
+                    if (!File.Exists(backupFile)) { noBackup++; continue; }
+
+                    var resolvedDest = FileOperationsHelper.ResolveMappedPathAnyKnown(action.Path, true);
+                    if (string.IsNullOrWhiteSpace(resolvedDest)) resolvedDest = action.Path;
+
+                    // Something's already sitting there - don't silently overwrite it, and don't
+                    // guess whether it's already been handled. Leave the row for a human to look at.
+                    if (File.Exists(resolvedDest)) { alreadyPresent++; continue; }
+
+                    try
+                    {
+                        File.Copy(backupFile, resolvedDest);
+
+                        var srcInfo = new FileInfo(backupFile);
+                        var destInfo = new FileInfo(resolvedDest);
+                        if (srcInfo.Length != destInfo.Length)
+                            throw new IOException("Restored file size does not match its backup copy.");
+
+                        Logger.Log($"Restored failed import from backup: {resolvedDest}", LogSeverity.Medium,
+                            new { Backup = backupFile, Destination = resolvedDest });
+                        ProposedActions.Remove(action);
+                        restored++;
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log($"Restore from backup failed for {action.OriginalFileName}: {ex.Message}", LogSeverity.High,
+                            new { Error = ex.Message, Backup = backupFile, Destination = resolvedDest });
+                    }
+                }
+
+                if (restored > 0)
+                    await FetchQueueRecordsAsync();
+
+                var parts = new List<string>();
+                if (restored > 0) parts.Add($"Restored {restored} file(s) from backup");
+                if (alreadyPresent > 0) parts.Add($"{alreadyPresent} already present at the destination");
+                if (noBackup > 0) parts.Add($"{noBackup} had no backup to restore from");
+                var message = string.Join("; ", parts) + ".";
+
+                if (restored == 0) _status.ShowError(message);
+                else _status.SetInfo(message);
+            });
+        }
+
         // Reports what happened synchronously (moves/unlinks/deletes/failures, via the existing
         // ImportSummary) plus how many import commands were sent for background verification and
         // how many stuck rows are being re-checked - there's no confirmed import count to report

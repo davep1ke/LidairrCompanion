@@ -183,7 +183,7 @@ namespace LidarrCompanion.Web.Services
                 if (string.IsNullOrWhiteSpace(action.Path))
                     throw new InvalidOperationException($"Proposed action contains an empty Path for release '{releaseKey}'.");
 
-                var destFile = Path.Combine(destFolder, Path.GetFileName(action.Path));
+                var destFile = BackupPathHelper.ComputeBackupFilePath(backupRoot, defaultFolderName, action.Path);
                 ValidateAndBackupFile(action.Path, releaseKey, destFile);
                 action.BackedUp = true;
             }

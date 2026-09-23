@@ -188,6 +188,8 @@
             <div class="triage-proposed-actions">
                 <button class="action-btn" @onclick="Unselect">Unselect</button>
                 <button class="action-btn" @onclick="ClearProposed">Clear</button>
+                <button class="action-btn btn-restore @(HasFailedImportToRestore() ? "btn-restore-active" : "")"
+                        disabled="@(!HasFailedImportToRestore())" @onclick="RestoreFailedImports">Restore</button>
                 <button class="action-btn btn-process" @onclick="ProcessImport">Process Actions</button>
             </div>
         </div>
@@ -415,6 +417,15 @@
     private void ClearProposed()
     {
         Triage.ClearProposed();
+        StateHasChanged();
+    }
+
+    private bool HasFailedImportToRestore() =>
+        Triage.ProposedActions.Any(p => p.Action == ProposalActionType.VerifyImport && p.Status == ImportActionStatus.Failed);
+
+    private async Task RestoreFailedImports()
+    {
+        await Triage.RestoreFailedImportsAsync();
         StateHasChanged();
     }
 

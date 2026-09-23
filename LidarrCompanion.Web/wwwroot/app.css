@@ -781,6 +781,23 @@ h1:focus {
     min-height: 4rem;
 }
 
+/* Dim until there's actually a failed import to restore, then match the status-bar error palette
+   so it reads as "something needs attention" the same way an error message does. */
+.btn-restore {
+    opacity: 0.5;
+}
+
+.btn-restore.btn-restore-active {
+    opacity: 1;
+    background: #5e2424;
+    color: #ffd8d8;
+    border-color: #7a3030;
+}
+
+.btn-restore.btn-restore-active:hover {
+    background: #712c2c;
+}
+
 /* Sticky headers so a long, now taller, list keeps its column titles in view. */
 .triage-table thead th {
     position: sticky;

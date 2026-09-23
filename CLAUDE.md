@@ -459,6 +459,45 @@ live-verified against the owner's real Lidarr: the queue-table-staleness root ca
 fix attempt's flaw, were both confirmed directly from real import runs (not driven by this session).
 The corrected settle-triggered logic itself is build + code-review verified only so far.
 
+**Real incident: a `VerifyImport` can exhaust its retries even though the file is genuinely gone
+from the import folder, and reprocessing can't fix that by design.** Two releases matched to the
+*same* Lidarr album, processed in the same batch (`ImportRunner.RunPipelineAsync`'s import groups
+run strictly sequentially via `await`, ~25ms apart in the log that caught this - not a concurrency
+bug on this app's side); one verified fine, the other's `VerifyImport` polled
+`GetTracksByReleaseAsync`/checked its own `TrackId` for ~2.5 minutes twice (the owner reprocessed it
+once) and never got a `TrackFileId`, even though Lidarr's import *command* had reported success.
+Confirmed directly against the live Lidarr API (`GET /api/v1/track?albumReleaseId=...`, read-only)
+that the track genuinely had no file - most likely a race inside Lidarr's own background command
+processor when two manual-import commands land for the same album close together, not something
+visible from this app's side to prevent. Reprocessing a stuck `VerifyImport` only re-polls (see
+above) - it deliberately never resends the import command, so if Lidarr never actually attached the
+file in the first place, no amount of reprocessing was ever going to fix it. The file itself wasn't
+lost - `BackupProposedActionFiles` had already copied it before Lidarr touched the original - so
+recovery is "copy the backup back into the import folder and let it go through a fresh Import."
+
+**`TriageService.RestoreFailedImportsAsync`** does exactly that as a one-click recovery: scoped
+specifically to `ProposedActions` where `Action == VerifyImport && Status == Failed` (a plain failed
+Import/Unlink/Delete/Move is deliberately excluded - by the time one of those fails, its source file
+typically never moved in the first place, so there's nothing to restore and doing so anyway could
+just as easily overwrite something that's actually fine). For each one, it recomputes the backup
+path via `Core/Helpers/BackupPathHelper.ComputeBackupFilePath` (tested) - the **same** helper
+`ImportRunner.BackupReleaseGroup` was refactored to call when *writing* the backup, specifically so
+the write and read sides can't silently drift apart into looking in different places. Copies (not
+moves) the backup file back to the action's resolved source path, skips - without touching anything
+- if a file is already sitting there (something's already been handled; don't guess), reports "no
+backup found" rather than erroring if the backup's gone too, and only removes the action from
+`ProposedActions` on an actual successful, size-verified restore. The Import page's **Restore**
+button sits directly above Process Actions, disabled/dimmed until
+`ProposedActions.Any(p => p.Action == VerifyImport && p.Status == Failed)` is true, then lights up
+in the same red as a status-bar error (`.btn-restore-active` in `app.css`) so it reads as "something
+needs attention" the same way an error message does. Live-verified on the isolated dev instance via
+a throwaway injector page (`/restore-test`, deleted after use - couldn't reproduce a genuinely
+failed `VerifyImport` without either waiting out real retries or mutating the real Lidarr, so this
+followed the same throwaway-harness approach as the `RunBusyAsync` yield test above): button
+correctly dim/disabled with no failed actions, lights up the instant one is added, clicking it
+copied the backup file's actual bytes to the right destination, removed the row, and the button
+immediately reverted to dim/disabled.
+
 ### Sift start position
 
 `SiftService.StartAtRandomLetter` keeps the queue alphabetical (by file name) but begins it at a
