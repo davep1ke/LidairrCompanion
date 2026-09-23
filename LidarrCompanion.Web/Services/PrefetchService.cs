@@ -41,6 +41,23 @@ namespace LidarrCompanion.Web.Services
             _queued.Clear();
         }
 
+        // Targeted invalidation, used after Process Actions instead of a blanket Reset(): only the
+        // release/artist that was actually just modified on disk needs a fresh fetch next time.
+        public void InvalidateReleaseFiles(string outputPath)
+        {
+            if (string.IsNullOrWhiteSpace(outputPath)) return;
+            _filesByOutputPath.TryRemove(outputPath, out _);
+            _queued.TryRemove("files:" + outputPath, out _);
+        }
+
+        public void InvalidateArtistTracks(string artistName)
+        {
+            var key = MatchingService.Normalize(artistName);
+            if (string.IsNullOrWhiteSpace(key)) return;
+            _tracksByArtistName.TryRemove(key, out _);
+            _queued.TryRemove("artist:" + key, out _);
+        }
+
         public void EnqueueQueueRecordFiles(LidarrQueueRecord record)
         {
             if (string.IsNullOrWhiteSpace(record.OutputPath)) return;

@@ -35,7 +35,6 @@ namespace LidarrCompanion.Web.Services
         public IReadOnlyList<SiftTrack> AllTracks => _allTracks;
         public IReadOnlyList<SiftTrack> NextTracks { get; private set; } = Array.Empty<SiftTrack>();
         public SiftTrack? CurrentTrack { get; private set; }
-        public bool HasAttemptedLoad { get; private set; }
 
         public int DefaultStartPositionPercent { get; private set; }
         public double LastSeekPercent { get; set; }
@@ -63,7 +62,6 @@ namespace LidarrCompanion.Web.Services
 
         public void LoadTracksFromFolder()
         {
-            HasAttemptedLoad = true;
             var siftFolder = AppSettings.GetValue(SettingKey.SiftFolder);
             if (string.IsNullOrWhiteSpace(siftFolder) || !Directory.Exists(siftFolder))
             {

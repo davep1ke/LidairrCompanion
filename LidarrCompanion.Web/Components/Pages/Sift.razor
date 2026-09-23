@@ -1,5 +1,5 @@
 @page "/sift"
-@rendermode InteractiveServer
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
 @implements IAsyncDisposable
 @inject SiftService SiftState
 @inject IPlaybackService Playback
@@ -85,15 +85,14 @@
 @code {
     protected override void OnInitialized()
     {
-        if (!SiftState.HasAttemptedLoad)
+        // Rescans the folder on every visit, so files added/removed since the last visit actually
+        // show up - unless a track is mid-play, in which case the user is just coming back to it
+        // and a rescan would reassign every SiftTrack.Id (including the one currently streaming),
+        // desyncing the player. @rendermode above is prerender:false specifically so this doesn't
+        // run twice (once for a throwaway prerender, once for real) on every single visit.
+        if (!IsCurrentSiftTrackPlaying)
         {
             SiftState.LoadTracksFromFolder();
-        }
-        else if (!IsCurrentSiftTrackPlaying)
-        {
-            // Re-opening Sift starts somewhere new, unless a track is mid-play (then the user is
-            // just coming back to it).
-            SiftState.StartAtRandomLetter();
         }
 
         Playback.StateChanged += OnPlaybackChanged;

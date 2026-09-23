@@ -180,12 +180,45 @@ used to keep their data for the life of the process — a page left overnight sh
 queue. Now `TriageService.LastLoadedUtc` + `Core/Helpers/RefreshPolicy` decide: data is stale if
 never loaded, invalidated by a new sign-in (`Login.razor` calls `Triage.MarkSessionStale()`), or
 older than 6 hours (`RefreshPolicy.DefaultMaxAge`). `RefreshAsync` is the single "get current data"
-path: it calls `PrefetchService.Reset()` (drops every cache; a generation counter stops a fetch
-that was already in flight from writing a stale result back), fetches queue + artists, **runs
-auto-match itself** (there is no separate Auto Match button/Alt+3 any more), then queues
-prefetches. It's guarded so Home and Import both calling it on arrival don't double-run. An empty
-artist track list is deliberately **not cached** — a just-created artist has no albums until
-Lidarr's own metadata refresh finishes.
+path: it fetches queue + artists, **runs auto-match itself** (there is no separate Auto Match
+button/Alt+3 any more), then queues prefetches. It's guarded so Home and Import both calling it on
+arrival don't double-run. An empty artist track list is deliberately **not cached** — a just-created
+artist has no albums until Lidarr's own metadata refresh finishes.
+
+**Cache invalidation is now targeted, not a blanket wipe (real complaint fixed).** `RefreshAsync`
+used to call `PrefetchService.Reset()` unconditionally, throwing away every already-fetched
+release's files *and* every artist's tracks on every plain Refresh — not just re-polling the top
+queue/artist lists, which is all "Refresh" is supposed to mean. It no longer calls `Reset()` at
+all; `EnqueueFilePrefetches`/`EnqueueMatchedArtistPrefetches` are no-ops for anything already
+cached, so a Refresh now just re-polls Lidarr's queue/artist lists and top-fills whatever's
+missing. Live-verified via the server log: selecting the same matched release before and after a
+Refresh logged exactly one `LidarrHelper.GetAlbumsByArtistAsync` call, not two — the second select
+hit the warm cache.
+
+Targeted invalidation instead happens in **`TriageService.RefreshQueueAndArtistsAfterProcessingAsync`**,
+called after both `ProcessImportAsync` and `ResumeImportAfterCoverArtAsync` finish running the
+pipeline (previously nothing refreshed the queue table or either prefetch cache after processing at
+all — a real complaint: the top list and the just-processed release's files/tracks kept showing
+pre-import state). What it does, using `Core/Helpers/PostProcessInvalidation` (pure, tested) to
+compute the sets from the processed `ProposedAction`s:
+- Drops the file-list cache entry (`PrefetchService.InvalidateReleaseFiles`) for every release that
+  had *any* successful action (Import/Unlink/Delete/Move all change what's on disk in that folder).
+- Drops the artist-tracks cache entry (`InvalidateArtistTracks`) only for artists with a successful
+  **Import** specifically (that's the only action type that flips a track's `HasFile` in Lidarr).
+- Does a full queue+artist re-fetch (so fully-imported/removed records disappear from the table),
+  but **carries forward every existing `Match`/`MatchedArtist` by release identity first**
+  (`ImplicitUnlink.IsSameRelease`, matching `DownloadId` then falling back to title) and only runs
+  `AutoMatchReleasesToArtists` over the *leftover unmatched* records — unlike a full Refresh (which
+  intentionally re-auto-matches everything, per the owner's earlier request), this must not silently
+  discard a manual match on some unrelated release just because a different release was processed.
+  (`AutoMatchReleasesToArtists` unconditionally resets `Match`/`MatchedArtist` on every record it's
+  given, which is exactly why it can't be run over the *whole* list here.)
+- Re-enqueues prefetches for the fresh queue and, if the just-processed release is still selected,
+  reloads it live (the cache was just invalidated for it) — or clears the selection if that record
+  no longer exists in the fresh queue.
+- Live-verification here is build + the tested pure logic only — not run against the real Lidarr in
+  this session, since it mutates real files/state (matches the established practice for anything
+  that calls Process Actions or creates a Lidarr artist).
 
 **Gotcha already hit once:** each background job needs its own fresh `LidarrHelper` (i.e.
 `new LidarrHelper()`), not a shared `HttpClient` passed into multiple `LidarrHelper` instances —
@@ -268,8 +301,20 @@ rows in bounded mode (otherwise the Move buttons need their own scrollbar on a l
 random letter, wrapping to A after Z, so the tail of the alphabet isn't starved when the queue is
 rarely emptied (real complaint: Z tracks sat there forever). The letter is picked uniformly from the
 initials that actually occur (`Core/Helpers/AlphabeticalRotation`, tested); digit/symbol-named files
-wrap to the very end. It runs on the initial load and every time the Sift page is opened, except
-when a Sift track is currently playing (coming back to a track mid-play keeps its place).
+wrap to the very end.
+
+**Sift now rescans the folder on every visit, not just once per process lifetime** (real complaint:
+the track list never picked up files added/removed on disk after the first load). `Sift.razor`'s
+`OnInitialized` calls `LoadTracksFromFolder()` (a real `Directory.GetFiles` + per-file
+`TagLib`/cover-art read) unconditionally now — `HasAttemptedLoad`/the old "just reorder in memory"
+path is gone entirely — **unless a Sift track is currently playing**, in which case nothing
+rescans (a rescan reassigns every `SiftTrack.Id`, including whichever one is mid-stream, which would
+desync the player). Because of this, `Sift.razor`'s `@rendermode` had to move to
+`@(new InteractiveServerRenderMode(prerender: false))` (was plain `InteractiveServer`) — otherwise
+the documented prerender-runs-`OnInitialized`-twice gotcha below would mean *every single visit*
+pays for two full folder scans instead of one. Live-verified: added a file to the watched folder
+mid-session, navigated away and back with no page reload, and the new file appeared ("Loaded 2
+tracks" → "Loaded 3 tracks") with no code path left that could still show a stale list.
 
 Sift also has **Skip** and **Back** buttons (no shortcuts): Skip moves on without keeping/trashing
 (the track stays in the queue and Skip wraps from the end to the start); Back steps to the previous
@@ -564,3 +609,16 @@ restart) before ever touching the real TrueNAS target.
 - No node/pip on this machine: headless `google-chrome --remote-debugging-port=9222` plus a
   hand-rolled stdlib-Python CDP websocket client worked fine (real mouse events via
   `Input.dispatchMouseEvent` with `modifiers=8` for shift-click, key events for shortcuts).
+- The scratchpad path's session-id segment can change between conversation turns even mid-session
+  (a prior turn's `cdp.py`/`restart.sh`/isolated `data/` dir can simply be gone) — don't assume a
+  scratchpad file written earlier in the same conversation still exists; check first
+  (`find /tmp/claude-1000 -maxdepth 3 -type d -name scratchpad`) and recreate the harness if needed.
+- Confirming a prefetch cache actually survived (vs. got silently refetched) can't rely on wall-clock
+  timing alone — UI/render overhead swamps the difference. Grep the real signal instead: `LidarrHelper`
+  logs `Getting albums for artist ID: <id>` (`data/logs/lidarrcompanion-<date>.log` under the
+  isolated `DataDirectory`) only on an actual live Lidarr call: one occurrence across two selections
+  of the same artist means the second one hit the cache, two means it didn't.
+- If a copied isolated `data/appsettings.json`'s `SiftFolder`/library paths point at a folder that's
+  since emptied or a share that isn't mounted in this session, Sift will legitimately show "No audio
+  files found" — that's not a bug to chase; repoint the *copy* at a scratch folder with a couple of
+  dummy files (or the real share once it's confirmed mounted) instead.

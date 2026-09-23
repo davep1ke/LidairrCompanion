@@ -90,10 +90,16 @@ namespace LidarrCompanion.Web.Services
         private int _refreshing;
 
         // Single entry point for "get current data": fetches the queue and artists concurrently
-        // under one busy message, drops every prefetched cache (so nothing older than this refresh
-        // survives), auto-matches queue records to artists, then queues background prefetch jobs
-        // (see PrefetchService) for every record's files and every matched artist's releases so
-        // selecting a record a moment later is instant.
+        // under one busy message, auto-matches queue records to artists, then queues background
+        // prefetch jobs (see PrefetchService) for every record's files and every matched artist's
+        // releases so selecting a record a moment later is instant.
+        //
+        // Deliberately does NOT touch PrefetchService's caches - EnqueueFilePrefetches/
+        // EnqueueMatchedArtistPrefetches below are no-ops for anything already cached, so a plain
+        // Refresh re-polls Lidarr's queue/artist lists without throwing away every already-fetched
+        // release's files or artist's tracks (a real complaint: Refresh used to wipe all of that
+        // too, not just the top list). RefreshQueueAndArtistsAfterProcessingAsync is the targeted
+        // counterpart that runs after Process Actions and invalidates only what was actually touched.
         //
         // Auto-match used to be a separate button; it's always wanted straight after a refresh, and
         // a refresh replaces the queue record objects (losing any match), so it belongs here.
@@ -106,8 +112,6 @@ namespace LidarrCompanion.Web.Services
             {
                 await RunBusyAsync("Refreshing queue and artists from Lidarr...", async () =>
                 {
-                    _prefetch.Reset();
-
                     var queueOk = FetchQueueRecordsAsync();
                     var artistsOk = FetchArtistsAsync();
                     var results = await Task.WhenAll(queueOk, artistsOk);
@@ -788,6 +792,83 @@ namespace LidarrCompanion.Web.Services
 
         #region Import
 
+        // Runs after a successful (possibly partial) import pipeline. Targeted, not a blanket
+        // RefreshAsync: invalidates only the prefetch-cache entries for releases/artists that were
+        // actually touched (their disk contents or Lidarr-side track metadata genuinely changed),
+        // then does a full queue+artist re-fetch so the top table drops fully-imported/removed
+        // records and reflects Lidarr's real state - but carries forward every existing match by
+        // release identity first, and only runs AutoMatch over the leftover *unmatched* records, so
+        // an unrelated release's manual match a moment earlier doesn't get silently discarded (unlike
+        // a full Refresh, which intentionally re-auto-matches everything - see RefreshAsync).
+        private async Task RefreshQueueAndArtistsAfterProcessingAsync(List<ProposedAction> processedActions)
+        {
+            foreach (var key in PostProcessInvalidation.ReleasesToInvalidate(processedActions))
+            {
+                var record = QueueRecords.FirstOrDefault(r => ImplicitUnlink.IsSameRelease(r.DownloadId, r.Title, key));
+                if (record is not null)
+                    _prefetch.InvalidateReleaseFiles(record.OutputPath);
+            }
+
+            foreach (var artistName in PostProcessInvalidation.ArtistsToInvalidate(processedActions))
+                _prefetch.InvalidateArtistTracks(artistName);
+
+            var oldMatches = QueueRecords
+                .Where(r => !string.IsNullOrWhiteSpace(r.MatchedArtist))
+                .Select(r => (Key: new ImplicitUnlink.ReleaseKey(r.DownloadId ?? string.Empty, r.Title ?? string.Empty), r.Match, r.MatchedArtist))
+                .ToList();
+            var selectedKey = SelectedQueueRecord is { } sel
+                ? new ImplicitUnlink.ReleaseKey(sel.DownloadId ?? string.Empty, sel.Title ?? string.Empty)
+                : (ImplicitUnlink.ReleaseKey?)null;
+
+            var queueOk = await FetchQueueRecordsAsync();
+            var artistsOk = await FetchArtistsAsync();
+            if (!queueOk || !artistsOk) return;
+
+            foreach (var record in QueueRecords)
+            {
+                var old = oldMatches.FirstOrDefault(m => ImplicitUnlink.IsSameRelease(record.DownloadId, record.Title, m.Key));
+                if (old.MatchedArtist is not (null or ""))
+                {
+                    record.Match = old.Match;
+                    record.MatchedArtist = old.MatchedArtist;
+                }
+            }
+
+            var stillUnmatched = QueueRecords.Where(r => string.IsNullOrWhiteSpace(r.MatchedArtist)).ToList();
+            if (stillUnmatched.Count > 0 && Artists.Count > 0)
+            {
+                try
+                {
+                    var importPath = AppSettings.GetValue(SettingKey.ImportPathLidarr);
+                    await Task.Run(() => MatchingService.AutoMatchReleasesToArtists(stillUnmatched, Artists, importPath));
+                }
+                catch (Exception ex)
+                {
+                    _status.ShowError($"Auto match failed: {ex.Message}");
+                }
+            }
+
+            LastLoadedUtc = DateTime.UtcNow;
+            EnqueueFilePrefetches();
+            EnqueueMatchedArtistPrefetches();
+
+            var reselected = selectedKey is { } key2
+                ? QueueRecords.FirstOrDefault(r => ImplicitUnlink.IsSameRelease(r.DownloadId, r.Title, key2))
+                : null;
+
+            if (reselected is not null)
+                await OnQueueRecordSelectedAsync(reselected);
+            else
+            {
+                SelectedQueueRecord = null;
+                SelectedFile = null;
+                SelectedTrack = null;
+                CheckedFileIds.Clear();
+                ManualImportFiles.Clear();
+                ArtistReleaseTracks.Clear();
+            }
+        }
+
         public async Task<ImportSummary> ProcessImportAsync()
         {
             if (ProposedActions.Count == 0)
@@ -843,6 +924,8 @@ namespace LidarrCompanion.Web.Services
                 // itself regardless of type, which this scan catches uniformly.
                 var totalFailed = ApplyImportResultsToProposedActions();
                 summary = new ImportSummary(result.ImportSuccessCount, result.MoveSuccessCount, result.SecondaryCopyCount, totalFailed);
+
+                await RefreshQueueAndArtistsAfterProcessingAsync(actionsSnapshot);
             });
 
             // When paused, the caller navigates straight to /cover-art - the page itself is the
@@ -924,6 +1007,8 @@ namespace LidarrCompanion.Web.Services
                 var result = await RunImportPipelineAsync(actionsSnapshot);
                 var totalFailed = ApplyImportResultsToProposedActions();
                 summary = new ImportSummary(result.ImportSuccessCount, result.MoveSuccessCount, result.SecondaryCopyCount, totalFailed);
+
+                await RefreshQueueAndArtistsAfterProcessingAsync(actionsSnapshot);
             });
 
             if (summary.HasAnyResult)
