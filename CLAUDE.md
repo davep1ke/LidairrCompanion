@@ -185,6 +185,27 @@ button/Alt+3 any more), then queues prefetches. It's guarded so Home and Import 
 arrival don't double-run. An empty artist track list is deliberately **not cached** — a just-created
 artist has no albums until Lidarr's own metadata refresh finishes.
 
+**Folder access check runs on every `RefreshAsync`, not just on the stale/new-session path.**
+Real incident that prompted this: a NAS CIFS share's permissions broke (see the `nounix` gotcha
+below) and the failure only surfaced deep in Process Actions, mid-backup, with no earlier warning.
+`TriageService.CheckFolderAccessAsync` runs `Core/Helpers/FolderAccessCheck.Check` (tested) against
+every path the app cares about — `ImportPathCompanion`, `DownloadPathCompanion`,
+`LibraryPathCompanion`, `BackupRootFolder`, `CopyImportedFilesPath`, `SiftFolder`, and every
+`Destination.DestinationPath` — concurrently with the queue/artist fetch inside `RefreshAsync`
+(`Task.WhenAll`, each check itself run via `Task.Run` since `Directory.Exists`/file I/O is
+synchronous). A blank/unset path is treated as OK (not every install uses every path). Any failures
+are combined into one `_status.ShowError("Can't access: ...")` call, taking priority over the normal
+"Refreshed: N queue records..." info message for that refresh. Because it's driven by the same
+`RefreshAsync` used for both the stale/new-session auto-load and the manual Refresh button, it
+re-checks (and clears) on every plain Refresh too, not just after the 6-hour timeout — live-verified
+both ways: broken paths correctly reported on first load, then correctly cleared (back to the normal
+"Refreshed: ..." message) after fixing the paths and hitting Refresh again, no restart needed.
+`FolderAccessCheck.Check` doesn't just `stat`/check mode bits for a write-required path — it
+creates-then-deletes a GUID-named probe file — because a `nounix`-mounted CIFS share reports a
+cosmetic static `0755` regardless of real server-side permissions (see the CIFS gotcha in the Docker
+section), so a mode-bit check alone would say "fine" on exactly the kind of share where this feature
+matters most.
+
 **Cache invalidation is now targeted, not a blanket wipe (real complaint fixed).** `RefreshAsync`
 used to call `PrefetchService.Reset()` unconditionally, throwing away every already-fetched
 release's files *and* every artist's tracks on every plain Refresh — not just re-polling the top
@@ -195,7 +216,7 @@ missing. Live-verified via the server log: selecting the same matched release be
 Refresh logged exactly one `LidarrHelper.GetAlbumsByArtistAsync` call, not two — the second select
 hit the warm cache.
 
-Targeted invalidation instead happens in **`TriageService.RefreshQueueAndArtistsAfterProcessingAsync`**,
+Targeted invalidation instead happens in **`TriageService.RefreshQueueAfterProcessingAsync`**,
 called after both `ProcessImportAsync` and `ResumeImportAfterCoverArtAsync` finish running the
 pipeline (previously nothing refreshed the queue table or either prefetch cache after processing at
 all — a real complaint: the top list and the just-processed release's files/tracks kept showing
@@ -205,14 +226,17 @@ compute the sets from the processed `ProposedAction`s:
   had *any* successful action (Import/Unlink/Delete/Move all change what's on disk in that folder).
 - Drops the artist-tracks cache entry (`InvalidateArtistTracks`) only for artists with a successful
   **Import** specifically (that's the only action type that flips a track's `HasFile` in Lidarr).
-- Does a full queue+artist re-fetch (so fully-imported/removed records disappear from the table),
-  but **carries forward every existing `Match`/`MatchedArtist` by release identity first**
-  (`ImplicitUnlink.IsSameRelease`, matching `DownloadId` then falling back to title) and only runs
-  `AutoMatchReleasesToArtists` over the *leftover unmatched* records — unlike a full Refresh (which
-  intentionally re-auto-matches everything, per the owner's earlier request), this must not silently
-  discard a manual match on some unrelated release just because a different release was processed.
-  (`AutoMatchReleasesToArtists` unconditionally resets `Match`/`MatchedArtist` on every record it's
-  given, which is exactly why it can't be run over the *whole* list here.)
+- Does a **queue-only** re-fetch (so fully-imported/removed records disappear from the table),
+  carrying forward every existing `Match`/`MatchedArtist` by release identity first
+  (`ImplicitUnlink.IsSameRelease`, matching `DownloadId` then falling back to title). It does **not**
+  re-fetch `Artists` or re-run `AutoMatchReleasesToArtists` — removed after the owner asked whether
+  either happened here and confirmed neither is needed: a plain, synchronously-processed `Import`
+  action only ever reaches `Status.Sent` at this point (never `Success` — that only happens once a
+  `VerifyImport` settles, asynchronously, see below), so `PostProcessInvalidation.ArtistsToInvalidate`
+  — which filters on `Action == VerifyImport && Status == Success` — structurally never matches
+  anything here; the artist list itself doesn't change shape from processing actions either. (A full
+  Refresh still does both, intentionally, per the owner's earlier request — this is specifically the
+  lighter post-processing path.)
 - Re-enqueues prefetches for the fresh queue and, if the just-processed release is still selected,
   reloads it live (the cache was just invalidated for it) — or clears the selection if that record
   no longer exists in the fresh queue.
@@ -386,7 +410,7 @@ confirmed Import) the artist's tracks cache, and reloads the currently-selected 
 it's the one that just settled.
 
 **A just-imported release used to keep sitting in the top Queue Records table indefinitely** (real
-bug, caught live): `ProcessImportAsync`'s synchronous `RefreshQueueAndArtistsAfterProcessingAsync`
+bug, caught live): `ProcessImportAsync`'s synchronous `RefreshQueueAfterProcessingAsync`
 runs right after *sending* the import command, when the original `Import` action is only `Sent` -
 Lidarr itself hasn't removed the record from its own queue yet at that point (confirmed directly
 from the log: the queue re-fetch and the `VerifyImport` actually succeeding were ~6.5s apart, same

@@ -122,7 +122,7 @@ namespace LidarrCompanion.Web.Services
         // EnqueueMatchedArtistPrefetches below are no-ops for anything already cached, so a plain
         // Refresh re-polls Lidarr's queue/artist lists without throwing away every already-fetched
         // release's files or artist's tracks (a real complaint: Refresh used to wipe all of that
-        // too, not just the top list). RefreshQueueAndArtistsAfterProcessingAsync is the targeted
+        // too, not just the top list). RefreshQueueAfterProcessingAsync is the targeted
         // counterpart that runs after Process Actions and invalidates only what was actually touched.
         //
         // Auto-match used to be a separate button; it's always wanted straight after a refresh, and
@@ -138,7 +138,9 @@ namespace LidarrCompanion.Web.Services
                 {
                     var queueOk = FetchQueueRecordsAsync();
                     var artistsOk = FetchArtistsAsync();
+                    var folderCheck = CheckFolderAccessAsync();
                     var results = await Task.WhenAll(queueOk, artistsOk);
+                    var folderIssues = await folderCheck;
 
                     SelectedQueueRecord = null;
                     SelectedFile = null;
@@ -156,7 +158,14 @@ namespace LidarrCompanion.Web.Services
                     EnqueueFilePrefetches();
                     EnqueueMatchedArtistPrefetches();
 
-                    if (results[0] && results[1])
+                    // A folder problem is the more urgent thing to surface - it's why processing
+                    // would fail later, and StatusService only ever shows one message at a time.
+                    if (folderIssues.Count > 0)
+                    {
+                        var summary = string.Join("; ", folderIssues.Select(i => $"{i.Label} ({i.Error})"));
+                        _status.ShowError($"Can't access: {summary}");
+                    }
+                    else if (results[0] && results[1])
                     {
                         var matched = QueueRecords.Count(r => !string.IsNullOrWhiteSpace(r.MatchedArtist));
                         _status.SetInfo($"Refreshed: {QueueRecords.Count} queue records ({matched} matched to an artist), {Artists.Count} artists.");
@@ -167,6 +176,36 @@ namespace LidarrCompanion.Web.Services
             {
                 Interlocked.Exchange(ref _refreshing, 0);
             }
+        }
+
+        // Checks every configured Companion-side folder this app actually reads/writes - built
+        // after a real NAS permission problem went unnoticed until Process Actions hit it mid-batch
+        // (see CLAUDE.md's nounix/CIFS permission gotcha - a plain Directory.Exists/listing can
+        // look fine on a mount like that right up until an actual write is attempted). Runs on
+        // Refresh, i.e. on app open once the 6h/new-session staleness window has passed (or on a
+        // manual Refresh click) - not on every page navigation. Each check is genuinely blocking
+        // I/O (FolderAccessCheck.Check), so each runs via Task.Run and all run in parallel; the
+        // caller awaits this alongside the queue/artist fetch rather than after it, so it doesn't
+        // add to Refresh's own wall time beyond whichever finishes last.
+        private async Task<List<FolderAccessCheck.Result>> CheckFolderAccessAsync()
+        {
+            var toCheck = new List<(string Label, string? Path, bool RequireWrite)>
+            {
+                ("Import folder", AppSettings.GetValue(SettingKey.ImportPathCompanion), true),
+                ("Download folder", AppSettings.GetValue(SettingKey.DownloadPathCompanion), true),
+                ("Library folder", AppSettings.GetValue(SettingKey.LibraryPathCompanion), false),
+                ("Backup folder", AppSettings.GetValue(SettingKey.BackupRootFolder), true),
+                ("Secondary copy folder", AppSettings.GetValue(SettingKey.CopyImportedFilesPath), true),
+                ("Sift folder", AppSettings.GetValue(SettingKey.SiftFolder), true),
+            };
+
+            foreach (var dest in Destinations)
+                toCheck.Add(($"Destination \"{dest.Name}\"", dest.DestinationPath, true));
+
+            var results = await Task.WhenAll(toCheck.Select(t =>
+                Task.Run(() => FolderAccessCheck.Check(t.Label, t.Path, t.RequireWrite))));
+
+            return results.Where(r => !r.Ok).ToList();
         }
 
         private async Task<bool> FetchQueueRecordsAsync()
@@ -869,7 +908,21 @@ namespace LidarrCompanion.Web.Services
             }
         }
 
-        private async Task RefreshQueueAndArtistsAfterProcessingAsync(List<ProposedAction> processedActions)
+        // Runs after Process Actions sends its synchronous batch (Unlink/Delete/Move done,
+        // Import commands sent). Deliberately does NOT re-fetch Artists or run AutoMatch any more -
+        // real complaint: this used to unconditionally re-pull Lidarr's entire artist list and run
+        // AutoMatch over every still-unmatched record on every single Process Actions call, even
+        // though importing files never changes who the artists are, all while holding the page's
+        // busy lock - directly part of "quite a few steps before it's usable again". Artists/
+        // AutoMatch now only happen via the manual Refresh button, which is what it's for; if a
+        // genuinely new queue record needs matching, Refresh is how you'd get it anyway. Doesn't
+        // touch LastLoadedUtc either, for the same reason - this isn't a full "get everything
+        // fresh" pass. ArtistsToInvalidate is deliberately not checked here either: it only ever
+        // matches a settled VerifyImport (Action==VerifyImport && Status==Success), and nothing
+        // reaches that status synchronously in this method - a plain Import action only gets as
+        // far as Sent here (see ProcessImportGroup); the background settle path
+        // (ApplySettledVerifyActionAsync) is what actually covers a confirmed import.
+        private async Task RefreshQueueAfterProcessingAsync(List<ProposedAction> processedActions)
         {
             foreach (var key in PostProcessInvalidation.ReleasesToInvalidate(processedActions))
             {
@@ -878,35 +931,14 @@ namespace LidarrCompanion.Web.Services
                     _prefetch.InvalidateReleaseFiles(record.OutputPath);
             }
 
-            foreach (var artistName in PostProcessInvalidation.ArtistsToInvalidate(processedActions))
-                _prefetch.InvalidateArtistTracks(artistName);
-
             var oldMatches = CaptureCurrentMatches();
             var selectedKey = SelectedQueueRecord is { } sel
                 ? new ImplicitUnlink.ReleaseKey(sel.DownloadId ?? string.Empty, sel.Title ?? string.Empty)
                 : (ImplicitUnlink.ReleaseKey?)null;
 
-            var queueOk = await FetchQueueRecordsAsync();
-            var artistsOk = await FetchArtistsAsync();
-            if (!queueOk || !artistsOk) return;
+            if (!await FetchQueueRecordsAsync()) return;
 
             CarryForwardMatches(QueueRecords, oldMatches);
-
-            var stillUnmatched = QueueRecords.Where(r => string.IsNullOrWhiteSpace(r.MatchedArtist)).ToList();
-            if (stillUnmatched.Count > 0 && Artists.Count > 0)
-            {
-                try
-                {
-                    var importPath = AppSettings.GetValue(SettingKey.ImportPathLidarr);
-                    await Task.Run(() => MatchingService.AutoMatchReleasesToArtists(stillUnmatched, Artists, importPath));
-                }
-                catch (Exception ex)
-                {
-                    _status.ShowError($"Auto match failed: {ex.Message}");
-                }
-            }
-
-            LastLoadedUtc = DateTime.UtcNow;
             EnqueueFilePrefetches();
             EnqueueMatchedArtistPrefetches();
 
@@ -1021,7 +1053,7 @@ namespace LidarrCompanion.Web.Services
                     foreach (var newVerify in result.NewVerifyActions)
                         _verifyImport.Enqueue(newVerify);
 
-                    await RefreshQueueAndArtistsAfterProcessingAsync(actionsSnapshot);
+                    await RefreshQueueAfterProcessingAsync(actionsSnapshot);
                 });
             }
 
@@ -1127,7 +1159,7 @@ namespace LidarrCompanion.Web.Services
                 foreach (var newVerify in result.NewVerifyActions)
                     _verifyImport.Enqueue(newVerify);
 
-                await RefreshQueueAndArtistsAfterProcessingAsync(actionsSnapshot);
+                await RefreshQueueAfterProcessingAsync(actionsSnapshot);
             });
 
             PostSendSummary(summary, sentCount, retryCount: 0);
