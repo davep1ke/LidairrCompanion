@@ -359,21 +359,38 @@ passthrough, still background thread, touches nothing UI-bound) → the page's s
 real work in `InvokeAsync` → `TriageService.ApplySettledVerifyActionAsync` (now safely on the
 page's sync context) removes/updates the row, invalidates the release's file cache and (for a
 confirmed Import) the artist's tracks cache, and reloads the currently-selected release live if
-it's the one that just settled. No full queue+artist re-fetch happens per settlement (that stays a
-manual-Refresh/next-Process-Actions thing) - deliberate, to avoid hammering Lidarr's queue endpoint
-if several releases are verifying concurrently and settle in a staggered burst.
+it's the one that just settled.
+
+**A just-imported release used to keep sitting in the top Queue Records table indefinitely** (real
+bug, caught live): `ProcessImportAsync`'s synchronous `RefreshQueueAndArtistsAfterProcessingAsync`
+runs right after *sending* the import command, when the original `Import` action is only `Sent` -
+Lidarr itself hasn't removed the record from its own queue yet at that point (confirmed directly
+from the log: the queue re-fetch and the `VerifyImport` actually succeeding were ~6.5s apart, same
+release still present in the "111 queue records" snapshot taken before confirmation). Nothing
+re-checked the queue table again afterward. Fixed with a second, lighter path:
+`TriageService.RefreshQueueRecordsAfterVerifySettledAsync`, called from
+`ApplySettledVerifyActionAsync` only on a *successful* settle (a failed verify doesn't mean Lidarr's
+queue changed) - re-fetches just the queue records (not Artists, no AutoMatch pass, no prefetch
+re-enqueue; those don't meaningfully change from one file's import confirming) and carries forward
+existing matches the same way the full refresh does
+(`CaptureCurrentMatches`/`CarryForwardMatches`/`ReselectAfterQueueRefreshAsync`, now factored out
+and shared by both refresh paths). This is deliberately still not a *full* re-fetch+re-match+
+re-enqueue on every settlement (would be needless extra Lidarr load if several releases settle in a
+staggered burst) - just enough to notice "Lidarr's queue no longer has this release" and let it
+drop off the table.
 
 **Verified**: build + 169 Core tests (new: `ImportActionRulesTests`, `ImportActionDisplayTests`,
 `PostProcessInvalidationTests` updated for the enum) + a scratch console app referencing
 `LidarrCompanion.Web` directly (not a test project - `ImportRunner`/`TriageService` orchestration
-isn't unit-tested per the Testing section below) that reproduces the exact original bug scenario
-against real `ImportRunner.PrepareImport` and confirms it no longer aborts, plus a regression check
-that a genuine first-time backup still works and still sets `BackedUp`. Also live-verified: the app
-starts cleanly with the new DI registrations, and the Import page's new Status column renders with
-no Blazor error banner. **Not** verified live: an actual end-to-end stuck-then-reprocessed
-VerifyImport row against real Lidarr (can't manufacture "Lidarr takes >2.5 minutes" on demand
-without risking the real library), and Process Actions itself was not clicked against the real
-Lidarr/files during this work for the same reason.
+isn't unit-tested per the Testing section below) that reproduces the exact original backup-abort
+bug scenario against real `ImportRunner.PrepareImport` and confirms it no longer aborts, plus a
+regression check that a genuine first-time backup still works and still sets `BackedUp`. Also
+live-verified: the app starts cleanly with the new DI registrations, the Import page's new Status
+column renders with no Blazor error banner, and (against the owner's real Lidarr, via the app's own
+log, not driven by this session) the queue-table-staleness root cause was confirmed exactly as
+described above. The settle-triggered queue re-fetch fix itself (`RefreshQueueRecordsAfterVerifySettledAsync`)
+is build + code-review verified only, not yet observed live against a real completing import -
+next real import's log is the way to confirm it.
 
 ### Sift start position
 

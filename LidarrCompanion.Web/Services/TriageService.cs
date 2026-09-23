@@ -815,6 +815,51 @@ namespace LidarrCompanion.Web.Services
         // release identity first, and only runs AutoMatch over the leftover *unmatched* records, so
         // an unrelated release's manual match a moment earlier doesn't get silently discarded (unlike
         // a full Refresh, which intentionally re-auto-matches everything - see RefreshAsync).
+        // Captures MatchedArtist/Match per release identity so they can be carried forward onto
+        // freshly-fetched replacement LidarrQueueRecord objects - FetchQueueRecordsAsync always
+        // builds brand-new objects with no match info of their own.
+        private List<(ImplicitUnlink.ReleaseKey Key, ReleaseMatchType Match, string MatchedArtist)> CaptureCurrentMatches() =>
+            QueueRecords
+                .Where(r => !string.IsNullOrWhiteSpace(r.MatchedArtist))
+                .Select(r => (Key: new ImplicitUnlink.ReleaseKey(r.DownloadId ?? string.Empty, r.Title ?? string.Empty), r.Match, r.MatchedArtist))
+                .ToList();
+
+        private static void CarryForwardMatches(IEnumerable<LidarrQueueRecord> freshRecords,
+            List<(ImplicitUnlink.ReleaseKey Key, ReleaseMatchType Match, string MatchedArtist)> oldMatches)
+        {
+            foreach (var record in freshRecords)
+            {
+                var old = oldMatches.FirstOrDefault(m => ImplicitUnlink.IsSameRelease(record.DownloadId, record.Title, m.Key));
+                if (old.MatchedArtist is not (null or ""))
+                {
+                    record.Match = old.Match;
+                    record.MatchedArtist = old.MatchedArtist;
+                }
+            }
+        }
+
+        // Reselects whichever record `selectedKey` now maps to in the just-refreshed QueueRecords,
+        // reloading its files/tracks live - or clears the selection if that release is no longer in
+        // Lidarr's queue at all (fully imported/removed). Shared by both refresh paths below.
+        private async Task ReselectAfterQueueRefreshAsync(ImplicitUnlink.ReleaseKey? selectedKey)
+        {
+            var reselected = selectedKey is { } key
+                ? QueueRecords.FirstOrDefault(r => ImplicitUnlink.IsSameRelease(r.DownloadId, r.Title, key))
+                : null;
+
+            if (reselected is not null)
+                await OnQueueRecordSelectedAsync(reselected);
+            else if (selectedKey is not null)
+            {
+                SelectedQueueRecord = null;
+                SelectedFile = null;
+                SelectedTrack = null;
+                CheckedFileIds.Clear();
+                ManualImportFiles.Clear();
+                ArtistReleaseTracks.Clear();
+            }
+        }
+
         private async Task RefreshQueueAndArtistsAfterProcessingAsync(List<ProposedAction> processedActions)
         {
             foreach (var key in PostProcessInvalidation.ReleasesToInvalidate(processedActions))
@@ -827,10 +872,7 @@ namespace LidarrCompanion.Web.Services
             foreach (var artistName in PostProcessInvalidation.ArtistsToInvalidate(processedActions))
                 _prefetch.InvalidateArtistTracks(artistName);
 
-            var oldMatches = QueueRecords
-                .Where(r => !string.IsNullOrWhiteSpace(r.MatchedArtist))
-                .Select(r => (Key: new ImplicitUnlink.ReleaseKey(r.DownloadId ?? string.Empty, r.Title ?? string.Empty), r.Match, r.MatchedArtist))
-                .ToList();
+            var oldMatches = CaptureCurrentMatches();
             var selectedKey = SelectedQueueRecord is { } sel
                 ? new ImplicitUnlink.ReleaseKey(sel.DownloadId ?? string.Empty, sel.Title ?? string.Empty)
                 : (ImplicitUnlink.ReleaseKey?)null;
@@ -839,15 +881,7 @@ namespace LidarrCompanion.Web.Services
             var artistsOk = await FetchArtistsAsync();
             if (!queueOk || !artistsOk) return;
 
-            foreach (var record in QueueRecords)
-            {
-                var old = oldMatches.FirstOrDefault(m => ImplicitUnlink.IsSameRelease(record.DownloadId, record.Title, m.Key));
-                if (old.MatchedArtist is not (null or ""))
-                {
-                    record.Match = old.Match;
-                    record.MatchedArtist = old.MatchedArtist;
-                }
-            }
+            CarryForwardMatches(QueueRecords, oldMatches);
 
             var stillUnmatched = QueueRecords.Where(r => string.IsNullOrWhiteSpace(r.MatchedArtist)).ToList();
             if (stillUnmatched.Count > 0 && Artists.Count > 0)
@@ -867,21 +901,30 @@ namespace LidarrCompanion.Web.Services
             EnqueueFilePrefetches();
             EnqueueMatchedArtistPrefetches();
 
-            var reselected = selectedKey is { } key2
-                ? QueueRecords.FirstOrDefault(r => ImplicitUnlink.IsSameRelease(r.DownloadId, r.Title, key2))
-                : null;
+            await ReselectAfterQueueRefreshAsync(selectedKey);
+        }
 
-            if (reselected is not null)
-                await OnQueueRecordSelectedAsync(reselected);
-            else
-            {
-                SelectedQueueRecord = null;
-                SelectedFile = null;
-                SelectedTrack = null;
-                CheckedFileIds.Clear();
-                ManualImportFiles.Clear();
-                ArtistReleaseTracks.Clear();
-            }
+        // Lightweight counterpart to the above, used when a background VerifyImport settles
+        // successfully (see ApplySettledVerifyActionAsync). The synchronous refresh right after
+        // sending an import command necessarily runs before Lidarr has actually confirmed/cleaned
+        // up its own queue - a just-imported release predictably still shows there at that point.
+        // This re-checks the queue once Lidarr really has confirmed it, so the release actually
+        // drops off the top table instead of lingering until the next manual Refresh. No Artists
+        // re-fetch, no AutoMatch pass, no prefetch re-enqueue here - none of those meaningfully
+        // change just because one file's import was confirmed, and a settle-time full refresh would
+        // be needless extra load on Lidarr for something a plain queue re-check already covers.
+        private async Task RefreshQueueRecordsAfterVerifySettledAsync()
+        {
+            var oldMatches = CaptureCurrentMatches();
+            var selectedKey = SelectedQueueRecord is { } sel
+                ? new ImplicitUnlink.ReleaseKey(sel.DownloadId ?? string.Empty, sel.Title ?? string.Empty)
+                : (ImplicitUnlink.ReleaseKey?)null;
+
+            if (!await FetchQueueRecordsAsync()) return;
+
+            CarryForwardMatches(QueueRecords, oldMatches);
+
+            await ReselectAfterQueueRefreshAsync(selectedKey);
         }
 
         public async Task<ImportSummary> ProcessImportAsync()
@@ -1178,10 +1221,22 @@ namespace LidarrCompanion.Web.Services
             if (!failed && !string.IsNullOrWhiteSpace(settled.MatchedArtist))
                 _prefetch.InvalidateArtistTracks(settled.MatchedArtist);
 
-            // If the user is still looking at this release, refresh what's on screen live rather
-            // than leaving it showing the file as still-unimported/still-there.
-            if (record is not null && SelectedQueueRecord == record)
+            if (!failed)
+            {
+                // A successful verify means Lidarr has now actually confirmed the import, which is
+                // when it cleans the record out of its own queue - re-check the queue table so a
+                // fully-imported release actually drops off it, rather than lingering until the
+                // next manual Refresh (the earlier synchronous refresh, right after sending the
+                // command, necessarily ran before Lidarr had confirmed anything). This also covers
+                // reselecting/reloading the current release live if it's still selected.
+                await RefreshQueueRecordsAfterVerifySettledAsync();
+            }
+            else if (record is not null && SelectedQueueRecord == record)
+            {
+                // A failure doesn't mean Lidarr's queue changed - just refresh what's on screen if
+                // the user is still looking at this release, same as before.
                 await OnQueueRecordSelectedAsync(record);
+            }
         }
 
         #endregion
