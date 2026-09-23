@@ -287,6 +287,30 @@ Live-verified against a real Lidarr with an *existing* artist (a 16s, 8,416-trac
 create-a-new-artist branch is unit-covered only via `Polling` — it was not exercised live because
 it mutates the real Lidarr.
 
+### `RunBusyAsync` needs an explicit yield before any blocking work
+
+**A "busy" state change doesn't reach the browser until the circuit's dispatcher actually gets to
+process it — and a synchronous, blocking call right after `SetBusy()` starves it of that chance.**
+`TriageService.RunBusyAsync` used to be `_status.SetBusy(message); await work();` with nothing in
+between. If `work` started with genuinely blocking I/O (backup file copies, via plain `File.Copy`,
+are the real example — `ImportRunner.PrepareImport`/`BackupProposedActionFiles` are fully
+synchronous, no `await` anywhere in that call chain), the busy-render got queued but the dispatcher
+thread was immediately handed to that blocking call instead of being given a chance to flush it —
+so the whole operation *looked* frozen (no status message, no page lock) for however long the
+blocking work took, then the result just appeared. Real complaint: hitting Process Actions felt
+like nothing happened for several seconds during a slow backup.
+
+Fix is a single `await Task.Yield();` between `SetBusy()` and `await work()` — this benefits every
+`RunBusyAsync` caller app-wide, not just Process Actions, since the busy-lock is genuinely global.
+**Verified with an isolated A/B repro** (a throwaway test page, `SetBusy` → optional
+`Task.Yield()` → `Thread.Sleep(1500)` → `ClearBusy`, removed after): with the yield, the busy state
+was visible in the DOM after 8ms; without it, the busy state was **never observed at all** during
+the entire 1.5s blocking call — proof this isn't just a "faster" fix, the busy indicator was
+genuinely invisible the whole time before it. (A naive verification via the Refresh button gave a
+false pass either way — Refresh's own first step is already a real `await`ed network call, so it
+yields on its own regardless of this fix; the test needed genuine blocking work first to actually
+exercise the bug.)
+
 ### Import page layout
 
 On desktop-sized viewports (`min-width:641px` and `min-height:620px`) `.triage-page` is a

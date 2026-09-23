@@ -79,6 +79,15 @@ namespace LidarrCompanion.Web.Services
         private async Task RunBusyAsync(string message, Func<Task> work)
         {
             _status.SetBusy(message);
+
+            // Without this, a caller whose work starts with synchronous, blocking I/O (backup file
+            // copies chief among them) never gives the Blazor circuit's dispatcher a chance to
+            // actually flush the pending "busy" render before that blocking work starts - the state
+            // change happens, but it sits queued behind the very call that's about to block the
+            // thread for however long the copy takes. Real symptom: hitting Process Actions with a
+            // slow backup felt like nothing happened for several seconds, not "locked and busy".
+            await Task.Yield();
+
             try
             {
                 await work();
