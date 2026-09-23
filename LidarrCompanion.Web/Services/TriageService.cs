@@ -913,18 +913,18 @@ namespace LidarrCompanion.Web.Services
         // re-fetch, no AutoMatch pass, no prefetch re-enqueue here - none of those meaningfully
         // change just because one file's import was confirmed, and a settle-time full refresh would
         // be needless extra load on Lidarr for something a plain queue re-check already covers.
-        private async Task RefreshQueueRecordsAfterVerifySettledAsync()
+        // Returns whether `key` is still present in Lidarr's queue after a fresh fetch - true on a
+        // failed fetch too, since "don't know" should never be read as "gone" (that would wrongly
+        // clear a still-live selection). Deliberately does NOT reselect/reload the release's files
+        // even if it's the current selection - see ApplySettledVerifyActionAsync, the only caller,
+        // for why a live re-scan of the release folder is specifically wrong to do here.
+        private async Task<bool> RefreshQueueRecordsOnlyAsync(ImplicitUnlink.ReleaseKey key)
         {
             var oldMatches = CaptureCurrentMatches();
-            var selectedKey = SelectedQueueRecord is { } sel
-                ? new ImplicitUnlink.ReleaseKey(sel.DownloadId ?? string.Empty, sel.Title ?? string.Empty)
-                : (ImplicitUnlink.ReleaseKey?)null;
-
-            if (!await FetchQueueRecordsAsync()) return;
+            if (!await FetchQueueRecordsAsync()) return true;
 
             CarryForwardMatches(QueueRecords, oldMatches);
-
-            await ReselectAfterQueueRefreshAsync(selectedKey);
+            return QueueRecords.Any(r => ImplicitUnlink.IsSameRelease(r.DownloadId, r.Title, key));
         }
 
         public async Task<ImportSummary> ProcessImportAsync()
@@ -1213,8 +1213,8 @@ namespace LidarrCompanion.Web.Services
             else
                 _status.SetInfo($"Verified import: {settled.OriginalFileName}");
 
-            var record = QueueRecords.FirstOrDefault(r =>
-                ImplicitUnlink.IsSameRelease(r.DownloadId, r.Title, new ImplicitUnlink.ReleaseKey(settled.DownloadId ?? string.Empty, settled.OriginalRelease ?? string.Empty)));
+            var releaseKey = new ImplicitUnlink.ReleaseKey(settled.DownloadId ?? string.Empty, settled.OriginalRelease ?? string.Empty);
+            var record = QueueRecords.FirstOrDefault(r => ImplicitUnlink.IsSameRelease(r.DownloadId, r.Title, releaseKey));
 
             if (record is not null)
                 _prefetch.InvalidateReleaseFiles(record.OutputPath);
@@ -1223,18 +1223,46 @@ namespace LidarrCompanion.Web.Services
 
             if (!failed)
             {
-                // A successful verify means Lidarr has now actually confirmed the import, which is
-                // when it cleans the record out of its own queue - re-check the queue table so a
-                // fully-imported release actually drops off it, rather than lingering until the
-                // next manual Refresh (the earlier synchronous refresh, right after sending the
-                // command, necessarily ran before Lidarr had confirmed anything). This also covers
-                // reselecting/reloading the current release live if it's still selected.
-                await RefreshQueueRecordsAfterVerifySettledAsync();
+                // A confirmed import is when Lidarr actually drops the record from its own queue -
+                // re-check for that so a fully-imported release actually leaves the top table. This
+                // deliberately never re-scans the release folder: by now the just-imported file is
+                // gone from it (for a single-file release, the whole path is gone), so asking Lidarr
+                // to re-scan it is not something to rely on - confirmed live that this path is
+                // exactly the one that broke for a single-file release like a lone track import.
+                var stillInQueue = await RefreshQueueRecordsOnlyAsync(releaseKey);
+
+                if (SelectedQueueRecord is not null && ImplicitUnlink.IsSameRelease(SelectedQueueRecord.DownloadId, SelectedQueueRecord.Title, releaseKey))
+                {
+                    if (!stillInQueue)
+                    {
+                        // The whole release is done and gone from Lidarr's queue - nothing left to
+                        // show for it.
+                        SelectedQueueRecord = null;
+                        SelectedFile = null;
+                        SelectedTrack = null;
+                        CheckedFileIds.Clear();
+                        ManualImportFiles.Clear();
+                        ArtistReleaseTracks.Clear();
+                    }
+                    else
+                    {
+                        // Still in the queue - other files in this release are still pending. Drop
+                        // just the one file we already know is done from Unimported Release Files
+                        // (no need to ask Lidarr to re-scan the folder to learn what we already know).
+                        var fileRow = ManualImportFiles.FirstOrDefault(f => f.Id == settled.FileId);
+                        if (fileRow is not null) ManualImportFiles.Remove(fileRow);
+
+                        // The artist's track list only depends on Lidarr's album/track data, not on
+                        // the release folder, so this reload is safe even though the file is gone.
+                        if (!string.IsNullOrWhiteSpace(settled.MatchedArtist))
+                            await LoadArtistReleasesAsync(settled.MatchedArtist);
+                    }
+                }
             }
             else if (record is not null && SelectedQueueRecord == record)
             {
-                // A failure doesn't mean Lidarr's queue changed - just refresh what's on screen if
-                // the user is still looking at this release, same as before.
+                // A failure doesn't mean Lidarr's queue changed, and the import never actually went
+                // through - the source file should still be there, so a live reload is fine here.
                 await OnQueueRecordSelectedAsync(record);
             }
         }

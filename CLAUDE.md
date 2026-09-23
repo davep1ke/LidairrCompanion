@@ -367,17 +367,39 @@ runs right after *sending* the import command, when the original `Import` action
 Lidarr itself hasn't removed the record from its own queue yet at that point (confirmed directly
 from the log: the queue re-fetch and the `VerifyImport` actually succeeding were ~6.5s apart, same
 release still present in the "111 queue records" snapshot taken before confirmation). Nothing
-re-checked the queue table again afterward. Fixed with a second, lighter path:
-`TriageService.RefreshQueueRecordsAfterVerifySettledAsync`, called from
-`ApplySettledVerifyActionAsync` only on a *successful* settle (a failed verify doesn't mean Lidarr's
-queue changed) - re-fetches just the queue records (not Artists, no AutoMatch pass, no prefetch
-re-enqueue; those don't meaningfully change from one file's import confirming) and carries forward
-existing matches the same way the full refresh does
-(`CaptureCurrentMatches`/`CarryForwardMatches`/`ReselectAfterQueueRefreshAsync`, now factored out
-and shared by both refresh paths). This is deliberately still not a *full* re-fetch+re-match+
-re-enqueue on every settlement (would be needless extra Lidarr load if several releases settle in a
-staggered burst) - just enough to notice "Lidarr's queue no longer has this release" and let it
-drop off the table.
+re-checked the queue table again afterward.
+
+**First fix attempt was itself wrong, caught by the owner before it shipped**: re-fetching the queue
+on settle and, if the release was still found there, reselecting it via `OnQueueRecordSelectedAsync`
+(the same live-rescan path a normal click uses) — which does a live Lidarr manual-import scan of the
+release's folder. By the time a file's `VerifyImport` has settled, that file is *gone* from the
+folder (for a single-file release, the whole `OutputPath` is a file path that no longer exists at
+all), so re-scanning it is not something to rely on, and Lidarr's queue frequently does **not** drop
+the record immediately even once every file in it is confirmed imported (observed live: a
+10-file release stayed in the queue table after full processing, and the flawed reselect logic
+then legitimately-but-uselessly rescanned the now-empty folder, showing "no files" for a release
+still selected). Corrected version, in `ApplySettledVerifyActionAsync`:
+- `TriageService.RefreshQueueRecordsOnlyAsync(key)` re-fetches just the queue records (carrying
+  forward matches via `CaptureCurrentMatches`/`CarryForwardMatches`, shared with the full refresh)
+  and returns whether the release is *still* in Lidarr's queue - no reselect, no file-rescan.
+- If it's gone from the queue: clear the selected-release panels (nothing left to show).
+- If it's still there (other files in the release still pending, or Lidarr just hasn't dropped it
+  yet): remove *only the one settled file* from `ManualImportFiles` locally (its `FileId` is already
+  known from the settled action - no Lidarr call needed to learn what's already known), and reload
+  `ArtistReleaseTracks` via `LoadArtistReleasesAsync` (safe even though the folder's changed, since
+  that call only depends on Lidarr's artist/album data, not the release folder).
+- A failed settle still uses the old live-reselect-if-current path (`OnQueueRecordSelectedAsync`) -
+  a failure means the import never actually went through, so the source file should still be there
+  and a rescan is fine.
+
+**Still open**: whether Lidarr reliably drops a manual-import queue record from `GetBlockedCompletedQueueAsync`
+once every file in it is confirmed, and if so how quickly - not established. If it lags or never
+happens for some releases, the release will keep showing in the top table until a plain Refresh
+(the full synchronous path can still see it disappear there, since that hits Lidarr fresh too) even
+though the fix above already stops it from wrongly claiming "no files". Not fixed further while
+that's unconfirmed - see the running conversation for the set of options being considered (a more
+assertive local "hide it once every one of its files is confirmed done" rule vs. trusting Lidarr's
+own queue state as-is).
 
 **Verified**: build + 169 Core tests (new: `ImportActionRulesTests`, `ImportActionDisplayTests`,
 `PostProcessInvalidationTests` updated for the enum) + a scratch console app referencing
@@ -385,12 +407,9 @@ drop off the table.
 isn't unit-tested per the Testing section below) that reproduces the exact original backup-abort
 bug scenario against real `ImportRunner.PrepareImport` and confirms it no longer aborts, plus a
 regression check that a genuine first-time backup still works and still sets `BackedUp`. Also
-live-verified: the app starts cleanly with the new DI registrations, the Import page's new Status
-column renders with no Blazor error banner, and (against the owner's real Lidarr, via the app's own
-log, not driven by this session) the queue-table-staleness root cause was confirmed exactly as
-described above. The settle-triggered queue re-fetch fix itself (`RefreshQueueRecordsAfterVerifySettledAsync`)
-is build + code-review verified only, not yet observed live against a real completing import -
-next real import's log is the way to confirm it.
+live-verified against the owner's real Lidarr: the queue-table-staleness root cause, and the first
+fix attempt's flaw, were both confirmed directly from real import runs (not driven by this session).
+The corrected settle-triggered logic itself is build + code-review verified only so far.
 
 ### Sift start position
 
@@ -699,6 +718,26 @@ restart) before ever touching the real TrueNAS target.
   file operation against these shares: move in batches, then verify with `sync` + delay + one fresh
   listing per directory, and retry only what's still unconfirmed, regardless of what `hard`/`soft`
   currently shows.
+- **This same CIFS mount uses `nounix`, so `ls -la`/`stat` on it show a cosmetic, static
+  `file_mode`/`dir_mode` (`0755`), not the real per-file Unix permission bits** — real access is
+  still decided server-side by Samba against the *actual* mode/owner on the NAS, which this client
+  simply can't see. Cost real time diagnosing a genuine backup permission failure (`Access to the
+  path '...' is denied` from `ImportRunner.ValidateAndBackupFile`): every `stat`/`ls` check from
+  this machine showed a plausible-looking `0755` on the affected directory regardless of its real
+  state, actively misleading the diagnosis, until checking the *real* mode directly on the TrueNAS
+  shell (`stat`, not through this mount) showed the truth. Root cause turned out to be directories
+  created by the separate TrueNAS-hosted deployment of this same app (a different container,
+  different effective identity - some directories owned by a UID `1002`, later ones by `root`,
+  the switch happening at a specific timestamp suggesting that deployment's own user context
+  changed) with mode `0770`/no "other" access at all, so this machine's SMB session (mapped to
+  neither the owning user nor group) was denied outright. **Fixing this needs `chmod` run directly
+  on the NAS/TrueNAS shell** (not via this CIFS mount, which can't see or change the real bits) -
+  and mind the exact bit: `chmod -R 0775` looked sufficient (added read+execute for "other") but
+  still left write denied, since "other" still had no `w` — `chmod -R o+w` (or `0777`) is what's
+  actually needed when two different, mutually-unrecognized identities (this app's two separate
+  deployments) both need to write into shared backup folders. When diagnosing a permission problem
+  on this share again: don't trust `stat`/`ls` from this machine's mount as ground truth — check
+  the real mode directly on the NAS/TrueNAS side.
 - **`/cover-art-test`** is a hidden dev harness (no nav link, route still live) working against
   copies in `/mnt/Music/.cover-art-test` (`TestFolder` constant) with no dependency on the import
   pipeline. Its search/preview/drag code is a *parallel copy* of `CoverArt.razor`'s, not shared —
