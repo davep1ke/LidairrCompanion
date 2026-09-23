@@ -166,7 +166,7 @@
         <div class="triage-proposed-body">
             <div class="table-scroll">
                 <table class="triage-table">
-                    <thead><tr><th>Type</th><th>FileName</th><th>OriginalRelease</th><th>MatchedArtist</th><th>MatchedTrack</th><th>MatchedRelease</th></tr></thead>
+                    <thead><tr><th>Type</th><th>FileName</th><th>OriginalRelease</th><th>MatchedArtist</th><th>MatchedTrack</th><th>MatchedRelease</th><th>Status</th></tr></thead>
                     <tbody>
                         @foreach (var pa in Triage.ProposedActions)
                         {
@@ -179,6 +179,7 @@
                                 <td>@pa.MatchedArtist</td>
                                 <td>@pa.MatchedTrack</td>
                                 <td>@pa.MatchedRelease</td>
+                                <td>@ImportActionDisplay.Describe(pa)</td>
                             </tr>
                         }
                     </tbody>
@@ -223,6 +224,8 @@
         Status.Changed += OnStatusChanged;
         Triage.ArtistJobsChanged += OnArtistJobsChanged;
         Triage.ArtistReleasesReady += OnArtistReleasesReady;
+        Triage.VerifyProgressChanged += OnVerifyProgressChanged;
+        Triage.VerifyActionSettled += OnVerifyActionSettled;
 
         // Landing here with nothing loaded, data from before this sign-in, or data older than
         // RefreshPolicy.DefaultMaxAge: fetch it (and auto-match) rather than showing an empty or
@@ -251,6 +254,20 @@
     private void OnArtistReleasesReady(string artistName) => InvokeAsync(async () =>
     {
         await Triage.RefreshSelectedArtistReleasesAsync(artistName);
+        StateHasChanged();
+    });
+
+    // Live-updating retry count on a Verifying row (VerifyImportService.Changed) - the action's own
+    // fields are already updated by the time this fires, nothing to fetch, just re-render.
+    private void OnVerifyProgressChanged() => InvokeAsync(StateHasChanged);
+
+    // A background VerifyImport action reached Success or exhausted its retries
+    // (VerifyImportService.ActionSettled, forwarded by TriageService). Runs on this circuit's sync
+    // context so ProposedActions isn't touched while a render is reading it - see
+    // TriageService.ApplySettledVerifyActionAsync.
+    private void OnVerifyActionSettled(ProposedAction settled) => InvokeAsync(async () =>
+    {
+        await Triage.ApplySettledVerifyActionAsync(settled);
         StateHasChanged();
     });
 
@@ -574,6 +591,8 @@
         Status.Changed -= OnStatusChanged;
         Triage.ArtistJobsChanged -= OnArtistJobsChanged;
         Triage.ArtistReleasesReady -= OnArtistReleasesReady;
+        Triage.VerifyProgressChanged -= OnVerifyProgressChanged;
+        Triage.VerifyActionSettled -= OnVerifyActionSettled;
         _selfRef?.Dispose();
         if (_shortcutsModule is not null)
         {

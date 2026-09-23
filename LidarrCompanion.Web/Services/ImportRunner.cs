@@ -5,16 +5,20 @@ using System.Collections.ObjectModel;
 
 namespace LidarrCompanion.Web.Services
 {
-    // Three separate tallies instead of one blended "success" count: a single logical import
-    // (Mark Match -> Process Actions) can go through Lidarr's own import command AND a secondary
-    // copy, or a destination move AND a secondary copy, and a blended count made those look like
-    // 2-4 "successes" for what the user reasonably thinks of as one file.
+    // Separate tallies instead of one blended "success" count: a destination move can also trigger
+    // a secondary copy, and blending those looked like 2 "successes" for one file. There's no
+    // ImportSuccessCount here any more - a real Lidarr import is only confirmed once its
+    // VerifyImport action settles, asynchronously (see VerifyImportService), not synchronously
+    // within RunPipelineAsync - NewVerifyActions is how many were sent off to be confirmed.
     public class ImportResult
     {
-        public int ImportSuccessCount { get; set; }
         public int MoveSuccessCount { get; set; }
         public int SecondaryCopyCount { get; set; }
         public int FailCount { get; set; }
+
+        // VerifyImport actions created while sending Import commands to Lidarr - the caller
+        // (TriageService) enqueues them into VerifyImportService once RunPipelineAsync returns.
+        public List<ProposedAction> NewVerifyActions { get; } = new();
     }
 
     // Ported from the WPF app's Services/ImportService.cs. The only real change is removing what
@@ -34,16 +38,20 @@ namespace LidarrCompanion.Web.Services
     // gate and calls back in.
     public class ImportRunner
     {
-        private const int MaxTrackFetchAttempts = 30;
-        private const int TrackFetchDelayMs = 5000;
+        // internal - VerifyImportService (which now owns the actual retry loop) shares these so
+        // the "how many attempts, how far apart" policy lives in one place.
+        internal const int MaxTrackFetchAttempts = 30;
+        internal const int TrackFetchDelayMs = 5000;
 
         #region File Operations
 
         // Skipped (copying not enabled/configured) is deliberately distinct from Success - a
         // caller that only checked "truthy" would count a no-op copy as one it actually made.
-        private enum CopyOutcome { Skipped, Success, Failed }
+        // internal (not private) - VerifyImportService reuses this for the post-verification
+        // secondary copy, same as the synchronous Move/Unlink path does.
+        internal enum CopyOutcome { Skipped, Success, Failed }
 
-        private CopyOutcome CopyFileToSecondary(string sourceFilePath, ProposedAction action, SettingKey copyFlagKey)
+        internal CopyOutcome CopyFileToSecondary(string sourceFilePath, ProposedAction action, SettingKey copyFlagKey)
         {
             try
             {
@@ -133,7 +141,13 @@ namespace LidarrCompanion.Web.Services
 
         private void BackupProposedActionFiles(List<ProposedAction> actionsSnapshot)
         {
-            Logger.Log($"Starting backup of {actionsSnapshot.Count} proposed action files", LogSeverity.Medium, new { ActionCount = actionsSnapshot.Count });
+            // Actions that don't touch a source file (VerifyImport chief among them - by the time
+            // one exists, its file has already been handed to Lidarr and may well be gone) or that
+            // already have a confirmed backup from an earlier run never reach this loop, so a
+            // reprocess can't fail validating a source file it was never going to back up again.
+            var toBackUp = actionsSnapshot.Where(a => ImportActionRules.RequiresSourceFile(a.Action) && !a.BackedUp).ToList();
+
+            Logger.Log($"Starting backup of {toBackUp.Count} proposed action files ({actionsSnapshot.Count} total actions)", LogSeverity.Medium, new { ActionCount = toBackUp.Count });
 
             var backupRoot = AppSettings.GetValue(SettingKey.BackupRootFolder);
             if (string.IsNullOrWhiteSpace(backupRoot))
@@ -142,7 +156,7 @@ namespace LidarrCompanion.Web.Services
                 return;
             }
 
-            foreach (var group in actionsSnapshot.GroupBy(a => a.OriginalRelease))
+            foreach (var group in toBackUp.GroupBy(a => a.OriginalRelease))
             {
                 BackupReleaseGroup(group, backupRoot);
             }
@@ -153,24 +167,25 @@ namespace LidarrCompanion.Web.Services
         private void BackupReleaseGroup(IGrouping<string?, ProposedAction> group, string backupRoot)
         {
             var releaseKey = group.Key ?? string.Empty;
-            var filePaths = group.Select(a => a.Path).ToList();
+            var actions = group.ToList();
 
-            if (filePaths.Count == 0)
+            if (actions.Count == 0)
                 throw new InvalidOperationException($"No file paths found for proposed actions in release '{releaseKey}'.");
 
-            Logger.Log($"Backing up {filePaths.Count} files for release: {releaseKey}", LogSeverity.Low, new { Release = releaseKey, FileCount = filePaths.Count });
+            Logger.Log($"Backing up {actions.Count} files for release: {releaseKey}", LogSeverity.Low, new { Release = releaseKey, FileCount = actions.Count });
 
-            var defaultFolderName = string.IsNullOrWhiteSpace(releaseKey) ? (Path.GetFileName(filePaths.FirstOrDefault()) ?? "release") : releaseKey;
+            var defaultFolderName = string.IsNullOrWhiteSpace(releaseKey) ? (Path.GetFileName(actions.FirstOrDefault()?.Path) ?? "release") : releaseKey;
             var destFolder = Path.Combine(backupRoot, defaultFolderName);
             Directory.CreateDirectory(destFolder);
 
-            foreach (var filePath in filePaths)
+            foreach (var action in actions)
             {
-                if (string.IsNullOrWhiteSpace(filePath))
+                if (string.IsNullOrWhiteSpace(action.Path))
                     throw new InvalidOperationException($"Proposed action contains an empty Path for release '{releaseKey}'.");
 
-                var destFile = Path.Combine(destFolder, Path.GetFileName(filePath));
-                ValidateAndBackupFile(filePath, releaseKey, destFile);
+                var destFile = Path.Combine(destFolder, Path.GetFileName(action.Path));
+                ValidateAndBackupFile(action.Path, releaseKey, destFile);
+                action.BackedUp = true;
             }
         }
 
@@ -247,17 +262,11 @@ namespace LidarrCompanion.Web.Services
                 await ProcessImportGroup(group, lidarr, manualImportFiles, proposedActions, artistReleaseTracks, result, actionsSnapshot);
             }
 
-            // VerifyImport actions - process verification retries. This is where a real Lidarr
-            // import actually gets confirmed (the command above can report success before Lidarr
-            // has actually placed the file), so ImportSuccessCount is only incremented here, not
-            // in ProcessImportGroup - counting both would double-count every real import.
-            await ProcessVerifyImportActions(actionsSnapshot, lidarr, manualImportFiles, result);
-
             // Cleanup
             ClearAssignmentTrackers(assignedFileIds, assignedTrackIds, artistReleaseTracks);
 
-            Logger.Log($"RunPipelineAsync completed - Imported: {result.ImportSuccessCount}, Moved: {result.MoveSuccessCount}, Copied: {result.SecondaryCopyCount}, Failed: {result.FailCount}",
-                LogSeverity.Medium, new { Imported = result.ImportSuccessCount, Moved = result.MoveSuccessCount, Copied = result.SecondaryCopyCount, Failed = result.FailCount });
+            Logger.Log($"RunPipelineAsync completed - Sent for verification: {result.NewVerifyActions.Count}, Moved: {result.MoveSuccessCount}, Copied: {result.SecondaryCopyCount}, Failed: {result.FailCount}",
+                LogSeverity.Medium, new { SentForVerification = result.NewVerifyActions.Count, Moved = result.MoveSuccessCount, Copied = result.SecondaryCopyCount, Failed = result.FailCount });
             return result;
         }
 
@@ -265,15 +274,8 @@ namespace LidarrCompanion.Web.Services
         {
             foreach (var a in actionsSnapshot)
             {
-                a.ImportStatus = string.Empty;
+                a.Status = ImportActionStatus.Pending;
                 a.ErrorMessage = string.Empty;
-
-                if (a.Action == ProposalActionType.VerifyImport)
-                {
-                    a.RetryCount = 0;
-                    a.LastRetryAttempt = null;
-                    Logger.Log($"Reset retry tracking for VerifyImport action: {a.OriginalFileName}", LogSeverity.Verbose, new { FileName = a.OriginalFileName });
-                }
             }
         }
 
@@ -287,9 +289,12 @@ namespace LidarrCompanion.Web.Services
             catch (Exception ex)
             {
                 Logger.Log($"Backup phase failed: {ex.Message}", LogSeverity.Critical, new { Error = ex.Message });
-                foreach (var a in actionsSnapshot)
+                // Only actions that genuinely needed (and didn't already have) a backup are put at
+                // risk by this failure - one release's backup problem shouldn't fail an unrelated
+                // action that was never going to touch its source file anyway.
+                foreach (var a in actionsSnapshot.Where(a => ImportActionRules.RequiresSourceFile(a.Action) && !a.BackedUp))
                 {
-                    a.ImportStatus = "Failed";
+                    a.Status = ImportActionStatus.Failed;
                     a.ErrorMessage = "Backup failed: " + ex.Message;
                 }
                 return false;
@@ -330,12 +335,12 @@ namespace LidarrCompanion.Web.Services
                 {
                     Logger.Log($"Processing Unlink action for: {ua.OriginalFileName}", LogSeverity.Low, new { FileName = ua.OriginalFileName, FileId = ua.FileId }, filePath: ua.Path);
                     ProcessMoveAction(ua, manualImportFiles, proposedActions, importRootSetting, null, result);
-                    ua.ImportStatus = "Success";
+                    ua.Status = ImportActionStatus.Success;
                 }
                 catch (Exception ex)
                 {
                     Logger.Log($"Unlink action failed: {ex.Message}", LogSeverity.High, new { FileName = ua.OriginalFileName, Error = ex.Message });
-                    ua.ImportStatus = "Failed";
+                    ua.Status = ImportActionStatus.Failed;
                     ua.ErrorMessage = ex.Message;
                     return null;
                 }
@@ -383,7 +388,7 @@ namespace LidarrCompanion.Web.Services
                 Logger.Log($"Destination not found or path not configured: {destName}", LogSeverity.High, new { DestinationName = destName });
                 foreach (var action in destGroup)
                 {
-                    action.ImportStatus = "Failed";
+                    action.Status = ImportActionStatus.Failed;
                     action.ErrorMessage = $"Destination '{destName}' not configured";
                 }
                 return true;
@@ -396,13 +401,13 @@ namespace LidarrCompanion.Web.Services
                 try
                 {
                     ProcessMoveAction(action, manualImportFiles, proposedActions, dest.DestinationPath, dest, result);
-                    action.ImportStatus = "Success";
+                    action.Status = ImportActionStatus.Success;
                     result.MoveSuccessCount++;
                 }
                 catch (Exception ex)
                 {
                     Logger.Log($"Move to destination failed: {ex.Message}", LogSeverity.High, new { FileName = action.OriginalFileName, Destination = destName, Error = ex.Message });
-                    action.ImportStatus = "Failed";
+                    action.Status = ImportActionStatus.Failed;
                     action.ErrorMessage = ex.Message;
                     return false;
                 }
@@ -544,7 +549,7 @@ namespace LidarrCompanion.Web.Services
                     return null;
             }
 
-            var deletedCount = deleteActions.Count(a => a.ImportStatus == "Success");
+            var deletedCount = deleteActions.Count(a => a.Status == ImportActionStatus.Success);
             Logger.Log($"Delete actions completed - {deletedCount} files deleted", LogSeverity.Medium, new { DeletedCount = deletedCount });
             return actionsSnapshot.Where(a => a.Action != ProposalActionType.Delete).ToList();
         }
@@ -568,13 +573,13 @@ namespace LidarrCompanion.Web.Services
 
                 CleanupAfterMove(da, manualImportFiles, proposedActions, sourceFolder);
 
-                da.ImportStatus = "Success";
+                da.Status = ImportActionStatus.Success;
                 return true;
             }
             catch (Exception ex)
             {
                 Logger.Log($"Delete action failed: {ex.Message}", LogSeverity.High, new { FileName = da.OriginalFileName, Error = ex.Message });
-                da.ImportStatus = "Failed";
+                da.Status = ImportActionStatus.Failed;
                 da.ErrorMessage = ex.Message;
                 return false;
             }
@@ -621,178 +626,24 @@ namespace LidarrCompanion.Web.Services
                         Quality = action.Quality,
                         RetryCount = 0,
                         MaxRetries = MaxTrackFetchAttempts,
-                        ImportStatus = $"Post-Import Copy (0/{MaxTrackFetchAttempts})"
+                        Status = ImportActionStatus.Verifying
                     };
 
-                    actionsSnapshot.Add(verifyAction);
                     proposedActions.Add(verifyAction);
+                    result.NewVerifyActions.Add(verifyAction);
                     Logger.Log($"Created VerifyImport action for track: {action.MatchedTrack}", LogSeverity.Verbose, new { TrackId = action.TrackId });
 
-                    // Not counted as a success yet - Lidarr accepting the command isn't the same
-                    // as the file actually landing, which VerifyImport below confirms. This just
-                    // marks the original action done so it drops out of the "Actions to Take" list.
-                    action.ImportStatus = "Success";
+                    // Sent, not Success - Lidarr accepting the command isn't the same as the file
+                    // actually landing, which the VerifyImport action above tracks going forward
+                    // (asynchronously now - see VerifyImportService). TriageService treats Sent the
+                    // same as Success for dropping this now-superseded row out of "Actions to Take".
+                    action.Status = ImportActionStatus.Sent;
                 }
             }
             catch (Exception ex)
             {
                 MarkImportGroupFailed(actionsForRelease, result, releaseKey, ex.Message, ex);
             }
-        }
-
-        private async Task<LidarrTrackFile?> TryRetrieveTrackFile(ProposedAction action, LidarrHelper lidarr)
-        {
-            Logger.Log($"Attempting to retrieve track from Lidarr", LogSeverity.Verbose, new { TrackId = action.TrackId, Attempt = action.RetryCount + 1, Max = action.MaxRetries });
-
-            try
-            {
-                var tracks = await lidarr.GetTracksByReleaseAsync(action.AlbumReleaseId).ConfigureAwait(false);
-                var matched = tracks?.FirstOrDefault(t => t.Id == action.TrackId);
-
-                if (matched != null && matched.TrackFileId > 0)
-                {
-                    var tf = await lidarr.GetTrackFileAsync(matched.TrackFileId).ConfigureAwait(false);
-                    if (tf != null && !string.IsNullOrWhiteSpace(tf.Path))
-                    {
-                        Logger.Log($"Track file verified successfully: {tf.Path}", LogSeverity.Low, new { TrackFileId = tf.Id, Path = tf.Path });
-                        return tf;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Log($"Failed to get track: {ex.Message}", LogSeverity.Low, new { Attempt = action.RetryCount + 1, Error = ex.Message });
-            }
-
-            return null;
-        }
-
-        private async Task ProcessVerifyImportActions(List<ProposedAction> actionsSnapshot, LidarrHelper lidarr, ObservableCollection<LidarrManualImportFile> manualImportFiles, ImportResult result)
-        {
-            while (true)
-            {
-                var verifyActions = actionsSnapshot
-                    .Where(a => a.Action == ProposalActionType.VerifyImport &&
-                                a.ImportStatus != "Success" &&
-                                a.ImportStatus != "Failed")
-                    .ToList();
-
-                if (verifyActions.Count == 0)
-                {
-                    Logger.Log("No VerifyImport actions to process", LogSeverity.Verbose);
-                    return;
-                }
-
-                Logger.Log($"Processing {verifyActions.Count} VerifyImport actions", LogSeverity.Medium, new { Count = verifyActions.Count });
-
-                var actionsToRequeue = new List<ProposedAction>();
-                var actionsProcessed = false;
-
-                foreach (var action in verifyActions)
-                {
-                    if (action.LastRetryAttempt.HasValue)
-                    {
-                        var timeSinceLastAttempt = DateTime.Now - action.LastRetryAttempt.Value;
-                        if (timeSinceLastAttempt.TotalMilliseconds < TrackFetchDelayMs)
-                        {
-                            Logger.Log($"Skipping verification - minimum delay not met", LogSeverity.Verbose, new { FileName = action.OriginalFileName, TimeSinceLastMs = timeSinceLastAttempt.TotalMilliseconds, RequiredMs = TrackFetchDelayMs });
-                            actionsToRequeue.Add(action);
-                            continue;
-                        }
-                    }
-
-                    action.LastRetryAttempt = DateTime.Now;
-                    action.RetryCount++;
-                    action.ImportStatus = $"Post-Import Copy ({action.RetryCount}/{action.MaxRetries})";
-
-                    Logger.Log($"Processing VerifyImport for: {action.OriginalFileName}", LogSeverity.Low, new { FileName = action.OriginalFileName, Attempt = action.RetryCount, Max = action.MaxRetries });
-
-                    var trackFile = await TryRetrieveTrackFile(action, lidarr);
-
-                    if (trackFile != null)
-                    {
-                        action.ImportStatus = "Success";
-                        result.ImportSuccessCount++;
-                        await TrySecondaryCopyForImport(action, trackFile, result);
-
-                        Logger.Log($"VerifyImport succeeded for: {action.OriginalFileName}", LogSeverity.Low, new { FileName = action.OriginalFileName });
-                        actionsProcessed = true;
-                    }
-                    else if (action.RetryCount >= action.MaxRetries)
-                    {
-                        Logger.Log($"VerifyImport max retries reached: {action.OriginalFileName}", LogSeverity.High, new { FileName = action.OriginalFileName, Attempts = action.RetryCount });
-                        action.ImportStatus = "Failed";
-                        action.ErrorMessage = $"Could not verify import after {action.MaxRetries} attempts. Click Import again to retry.";
-                        result.FailCount++;
-
-                        var fileRowFail = manualImportFiles.FirstOrDefault(f => f.Id == action.FileId);
-                        if (fileRowFail != null && manualImportFiles.Contains(fileRowFail))
-                        {
-                            manualImportFiles.Remove(fileRowFail);
-                        }
-                        actionsProcessed = true;
-                    }
-                    else
-                    {
-                        Logger.Log($"Requeueing VerifyImport action: {action.OriginalFileName}", LogSeverity.Verbose, new { FileName = action.OriginalFileName, Attempt = action.RetryCount });
-                        actionsToRequeue.Add(action);
-                    }
-                }
-
-                foreach (var action in actionsToRequeue)
-                {
-                    actionsSnapshot.Remove(action);
-                    actionsSnapshot.Add(action);
-                }
-
-                if (actionsToRequeue.Count > 0)
-                {
-                    if (!actionsProcessed)
-                    {
-                        Logger.Log($"No actions ready to process. Waiting {TrackFetchDelayMs}ms before retry", LogSeverity.Low, new { RequeuedCount = actionsToRequeue.Count });
-                        await Task.Delay(TrackFetchDelayMs);
-                    }
-                    else
-                    {
-                        Logger.Log($"Some actions processed. Continuing with {actionsToRequeue.Count} requeued actions", LogSeverity.Low, new { RequeuedCount = actionsToRequeue.Count });
-                    }
-                }
-                else
-                {
-                    return;
-                }
-            }
-        }
-
-        private async Task TrySecondaryCopyForImport(ProposedAction a, LidarrTrackFile tf, ImportResult result)
-        {
-            var copyEnabled = AppSettings.Current.GetTyped<bool>(SettingKey.CopyImportedFiles);
-            var copyDestRoot = AppSettings.GetValue(SettingKey.CopyImportedFilesPath);
-
-            if (!copyEnabled || string.IsNullOrWhiteSpace(copyDestRoot) || string.IsNullOrWhiteSpace(tf.Path))
-                return;
-
-            try
-            {
-                var resolvedTfPath = FileOperationsHelper.ResolveMappedPath(tf.Path, SettingKey.LibraryPathLidarr, true);
-                Logger.Log($"Copying imported file to secondary location", LogSeverity.Low, new { SourcePath = tf.Path }, filePath: resolvedTfPath);
-                var outcome = CopyFileToSecondary(resolvedTfPath, a, SettingKey.CopyImportedFiles);
-
-                if (outcome == CopyOutcome.Success)
-                {
-                    result.SecondaryCopyCount++;
-                }
-                else if (outcome == CopyOutcome.Failed)
-                {
-                    Logger.Log($"Secondary copy failed for imported file", LogSeverity.Medium, new { ResolvedPath = resolvedTfPath, FileName = a.OriginalFileName }, filePath: resolvedTfPath);
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Log($"Exception during secondary copy: {ex.Message}", LogSeverity.Medium, new { FileName = a.OriginalFileName, Error = ex.Message });
-            }
-
-            await Task.CompletedTask;
         }
 
         private void MarkImportGroupFailed(List<ProposedAction> actionsForRelease, ImportResult result, string? releaseKey, string errorMessage, Exception? ex = null)
@@ -802,7 +653,7 @@ namespace LidarrCompanion.Web.Services
 
             foreach (var action in actionsForRelease)
             {
-                action.ImportStatus = "Failed";
+                action.Status = ImportActionStatus.Failed;
                 action.ErrorMessage = errorMessage;
                 result.FailCount++;
             }

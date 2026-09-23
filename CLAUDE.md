@@ -295,6 +295,86 @@ actions 2), every list `flex:1; min-height:0; overflow:auto`, so lists grow with
 that the older fixed `max-height`s apply and the page scrolls. The controls column spans both grid
 rows in bounded mode (otherwise the Move buttons need their own scrollbar on a laptop).
 
+### Import status model and background verification (VerifyImportService)
+
+**The bug that started this**: reprocessing a release stuck on a red "failed to verify" row tried
+to back up its file *again* before doing anything else, and that backup step validated the file
+still existed at its *original* source path - which it often didn't, because Lidarr had already
+moved it there; only the verification (confirming Lidarr placed it) was actually still pending.
+That one failed validation aborted the *entire* reprocess batch, not just that row. Root-caused and
+reproduced directly against `ImportRunner.PrepareImport` (a scratch console app referencing
+`LidarrCompanion.Web`, not run against real Lidarr/files) before fixing it.
+
+**Status model.** `ProposedAction.ImportStatus` (free-form string: `""`, `"Success"`, `"Failed"`,
+ad-hoc `"Post-Import Copy (3/30)"` progress text all in one field, compared by string equality
+everywhere) is gone, replaced by `Status` (`Core/Helpers/ImportActionStatus`:
+`Pending → Sent → Verifying → Success/Failed` - Sent/Verifying only apply to Import actions going
+through post-import verification; every other action type goes Pending straight to Success/Failed
+synchronously). Display text is computed, not stored redundantly:
+`Core/Helpers/ImportActionDisplay.Describe(action)` reads `Status`/`RetryCount`/`MaxRetries`/
+`ErrorMessage` and is what the Import page's new "Status" column in Actions to Take renders.
+
+**`Core/Helpers/ImportActionRules.RequiresSourceFile(ProposalActionType)`** is the real fix:
+Import/Unlink/Delete/MoveToDestination all still need their source file (they haven't acted on it
+yet); VerifyImport never does (by the time one exists, its file has already been handed to Lidarr).
+`ImportRunner.BackupProposedActionFiles` filters on this - a VerifyImport action structurally never
+reaches the backup/source-validation step at all now, not just for this specific bug but as a
+general rule. On top of that, **`ProposedAction.BackedUp`** is set once a backup genuinely succeeds
+for an action, and the backup step also skips anything already `BackedUp` regardless of type - a
+second, more general safety net for the same class of "reprocessing re-validates a file that's
+already been handled" bug. Both are directly unit-verified (see below) against the real
+`ImportRunner`, not just asserted by reading the code.
+
+**Reprocessing a stuck VerifyImport row no longer goes through the shared pipeline at all.**
+`TriageService.ProcessImportAsync` partitions `ProposedActions` up front: any `Action ==
+VerifyImport` rows are reset (`RetryCount = 0`, `LastRetryAttempt = null`) and hand straight to
+`VerifyImportService.Enqueue(...)`, never touching `PrepareImport`/backup/the rest of the pipeline.
+Only genuine pipeline actions (Import/Unlink/Delete/MoveToDestination) go through
+`PrepareImport`→`RunImportPipelineAsync`. This is deliberately a *different code path*, not a
+filter buried inside shared logic - "Process Actions will pick it up again next time" (the owner's
+own framing) is true by construction. There is no dedicated "Re-verify" button - reprocessing
+already-tracked and already-failed VerifyImport rows the same way is what makes one unnecessary.
+
+**Verification moved to a background service (`VerifyImportService`)**, same singleton +
+`AddHostedService` shape as `PrefetchService` (see `Program.cs`) and same reasoning: the old
+`ImportRunner.ProcessVerifyImportActions` was a synchronous polling loop *inside*
+`RunPipelineAsync` that could hold Process Actions' busy lock (`pointer-events:none` on the whole
+page) for up to 2.5 minutes per batch (30 attempts × 5s, both constants now `internal` on
+`ImportRunner` so `VerifyImportService` shares the same policy). Now `ProcessImportAsync` returns
+as soon as import *commands* are sent - the status message changes from a final tally to "N sent to
+Lidarr - verifying in the background" (`TriageService.PostSendSummary`), and a real "imported"
+count is only known once a `VerifyImport` action actually settles, asynchronously.
+
+**Thread-safety pattern for the background verify loop** (same one already established for the
+non-blocking manual-artist-match job - see below): `VerifyImportService` freely mutates a tracked
+action's own simple fields (`Status`, `RetryCount`, `LastRetryAttempt`) directly from its
+background thread on every retry tick, firing a lightweight `Changed` event (no payload) for a
+listening page to just re-render - mutating fields on an object already sitting in an
+`ObservableCollection` is the same pattern the artist-match job's failure path already uses
+elsewhere in this codebase, and doesn't touch the collection's own membership. Only a *settle*
+(Success, or retries exhausted) actually changes `ProposedActions`' membership (`Remove`) and hits
+`PrefetchService`, so that part is NOT done from the background thread: `ActionSettled` fires
+(background thread) → `TriageService` forwards it as its own `VerifyActionSettled` event (thin
+passthrough, still background thread, touches nothing UI-bound) → the page's subscriber wraps the
+real work in `InvokeAsync` → `TriageService.ApplySettledVerifyActionAsync` (now safely on the
+page's sync context) removes/updates the row, invalidates the release's file cache and (for a
+confirmed Import) the artist's tracks cache, and reloads the currently-selected release live if
+it's the one that just settled. No full queue+artist re-fetch happens per settlement (that stays a
+manual-Refresh/next-Process-Actions thing) - deliberate, to avoid hammering Lidarr's queue endpoint
+if several releases are verifying concurrently and settle in a staggered burst.
+
+**Verified**: build + 169 Core tests (new: `ImportActionRulesTests`, `ImportActionDisplayTests`,
+`PostProcessInvalidationTests` updated for the enum) + a scratch console app referencing
+`LidarrCompanion.Web` directly (not a test project - `ImportRunner`/`TriageService` orchestration
+isn't unit-tested per the Testing section below) that reproduces the exact original bug scenario
+against real `ImportRunner.PrepareImport` and confirms it no longer aborts, plus a regression check
+that a genuine first-time backup still works and still sets `BackedUp`. Also live-verified: the app
+starts cleanly with the new DI registrations, and the Import page's new Status column renders with
+no Blazor error banner. **Not** verified live: an actual end-to-end stuck-then-reprocessed
+VerifyImport row against real Lidarr (can't manufacture "Lidarr takes >2.5 minutes" on demand
+without risking the real library), and Process Actions itself was not clicked against the real
+Lidarr/files during this work for the same reason.
+
 ### Sift start position
 
 `SiftService.StartAtRandomLetter` keeps the queue alphabetical (by file name) but begins it at a
@@ -424,6 +504,7 @@ These cost real debugging time. Read before touching render logic.
 | `IPlaybackService` | **Scoped** | Not needed by any minimal API endpoint |
 | `CoverArtGateService` | Singleton | Triage page and `/cover-art` page must see the same gate state |
 | `PrefetchService` | Singleton **and** HostedService | Singleton for DI injection, HostedService so ASP.NET Core actually runs its `ExecuteAsync` loop — registered as `AddHostedService(sp => sp.GetRequiredService<PrefetchService>())`, not a second instance |
+| `VerifyImportService` | Singleton **and** HostedService | Same shape/reasoning as `PrefetchService` — owns post-import verification polling, `TriageService` injects it directly to enqueue and subscribe |
 | `TriageService` | Singleton | `/audio/stream/{id}` needs the same instance the page is using |
 | `SiftService` | Singleton | `/audio/sift-stream/{id}` / `/audio/sift-cover/{id}` same reasoning |
 

@@ -32,15 +32,30 @@ namespace LidarrCompanion.Web.Services
         private readonly StatusService _status;
         private readonly CoverArtGateService _coverArtGate;
         private readonly PrefetchService _prefetch;
+        private readonly VerifyImportService _verifyImport;
         private readonly ImportRunner _importRunner = new();
         private readonly ProposalService _proposalService = new();
 
-        public TriageService(StatusService status, CoverArtGateService coverArtGate, PrefetchService prefetch)
+        public TriageService(StatusService status, CoverArtGateService coverArtGate, PrefetchService prefetch, VerifyImportService verifyImport)
         {
             _status = status;
             _coverArtGate = coverArtGate;
             _prefetch = prefetch;
+            _verifyImport = verifyImport;
+
+            // Forwarding only - VerifyImportService fires these from its own background thread, and
+            // neither handler here touches an ObservableCollection or anything UI-bound (that would
+            // be unsafe off the page's sync context). VerifyProgressChanged just tells a listening
+            // page "something ticked, re-render"; VerifyActionSettled hands the settled action to
+            // whichever page is listening, which must marshal via InvokeAsync before calling
+            // ApplySettledVerifyActionAsync - same pattern as ArtistJobsChanged/ArtistReleasesReady
+            // for the background artist-match job.
+            _verifyImport.Changed += () => VerifyProgressChanged?.Invoke();
+            _verifyImport.ActionSettled += settled => VerifyActionSettled?.Invoke(settled);
         }
+
+        public event Action? VerifyProgressChanged;
+        public event Action<ProposedAction>? VerifyActionSettled;
 
         public ObservableCollection<LidarrQueueRecord> QueueRecords { get; } = new();
         public List<LidarrArtist> Artists { get; private set; } = new();
@@ -877,56 +892,86 @@ namespace LidarrCompanion.Web.Services
                 return new ImportSummary(0, 0, 0, 0);
             }
 
+            // Stuck/failed VerifyImport rows (background verification exhausted its retries, or is
+            // still in flight from a previous click) are handled entirely separately: re-enqueuing
+            // them into VerifyImportService is all "process actions" needs to do for these - no
+            // backup, no pipeline, since nothing about re-checking with Lidarr touches the source
+            // file (ImportActionRules.RequiresSourceFile is false for VerifyImport). This is what
+            // makes reprocessing a stuck row "just re-verify" by construction, not by filtering it
+            // out of a shared code path.
+            var retryVerifies = ProposedActions.Where(pa => pa.Action == ProposalActionType.VerifyImport).ToList();
+            foreach (var retry in retryVerifies)
+            {
+                retry.RetryCount = 0;
+                retry.LastRetryAttempt = null;
+                retry.ErrorMessage = string.Empty;
+                _verifyImport.Enqueue(retry);
+            }
+
+            var hasPipelineActions = ProposedActions.Any(pa => pa.Action != ProposalActionType.VerifyImport);
+
             var summary = new ImportSummary(0, 0, 0, 0);
             bool paused = false;
             string? backupFailure = null;
             string? unlinkPlanFailure = null;
+            int sentCount = 0;
 
-            await RunBusyAsync("Importing files to Lidarr...", async () =>
+            if (hasPipelineActions)
             {
-                // Before anything is backed up or moved: every file in a release being imported that
-                // the user left without an action becomes an Unlink, because Lidarr deletes whatever
-                // is left behind in the folder after importing from it.
-                unlinkPlanFailure = await AddImplicitUnlinksAsync();
-                if (unlinkPlanFailure is not null) return;
-
-                var actionsSnapshot = ProposedActions.ToList();
-                var prepare = _importRunner.PrepareImport(actionsSnapshot, new ImportResult());
-
-                if (prepare.BackupFailed)
+                await RunBusyAsync("Sending actions to Lidarr...", async () =>
                 {
-                    // TryBackupFiles already wrote ImportStatus="Failed"/ErrorMessage directly
-                    // onto the ProposedAction instances (actionsSnapshot shares references with
-                    // ProposedActions) - just apply the usual cleanup pass and report everything
-                    // as failed (nothing got far enough to import/move/copy).
-                    backupFailure = actionsSnapshot.Select(a => a.ErrorMessage).FirstOrDefault(m => !string.IsNullOrWhiteSpace(m));
-                    var failedCount = ApplyImportResultsToProposedActions();
-                    summary = new ImportSummary(0, 0, 0, failedCount);
-                    return;
-                }
+                    // Before anything is backed up or moved: every file in a release being imported
+                    // that the user left without an action becomes an Unlink, because Lidarr deletes
+                    // whatever is left behind in the folder after importing from it.
+                    unlinkPlanFailure = await AddImplicitUnlinksAsync();
+                    if (unlinkPlanFailure is not null) return;
 
-                if (prepare.ArtItemsToVerify.Any(i => !i.HasCoverArt))
-                {
-                    // Pause here rather than awaiting the gate inline: this callback is running
-                    // inside RunBusyAsync, and a human-timescale wait would leave the triage page
-                    // behind pointer-events:none for as long as the user takes on /cover-art.
-                    // Parking the state and returning lets the page stay usable; resolving the
-                    // gate calls back into ResumeImportAfterCoverArtAsync/AbortImportAfterCoverArt.
-                    _coverArtGate.BeginGate(prepare.ArtItemsToVerify, actionsSnapshot);
-                    paused = true;
-                    return;
-                }
+                    // Re-snapshot rather than reusing the list above: AddImplicitUnlinksAsync may
+                    // have just added new Unlink rows to ProposedActions. The already-re-enqueued
+                    // VerifyImport rows are excluded - they never touch PrepareImport/backup.
+                    var actionsSnapshot = ProposedActions.Where(pa => pa.Action != ProposalActionType.VerifyImport).ToList();
+                    var prepare = _importRunner.PrepareImport(actionsSnapshot, new ImportResult());
 
-                var result = await RunImportPipelineAsync(actionsSnapshot);
-                // The scan-based fail count (not result.FailCount) is authoritative for failures:
-                // ImportRunner only increments FailCount for Import/VerifyImport failures, not
-                // Move/Unlink/Delete ones, but every action type sets ImportStatus="Failed" on
-                // itself regardless of type, which this scan catches uniformly.
-                var totalFailed = ApplyImportResultsToProposedActions();
-                summary = new ImportSummary(result.ImportSuccessCount, result.MoveSuccessCount, result.SecondaryCopyCount, totalFailed);
+                    if (prepare.BackupFailed)
+                    {
+                        // TryBackupFiles already wrote Status=Failed/ErrorMessage directly onto the
+                        // ProposedAction instances (actionsSnapshot shares references with
+                        // ProposedActions) - just apply the usual cleanup pass and report everything
+                        // as failed (nothing got far enough to import/move/copy).
+                        backupFailure = actionsSnapshot.Select(a => a.ErrorMessage).FirstOrDefault(m => !string.IsNullOrWhiteSpace(m));
+                        var failedCount = ApplyImportResultsToProposedActions();
+                        summary = new ImportSummary(0, 0, 0, failedCount);
+                        return;
+                    }
 
-                await RefreshQueueAndArtistsAfterProcessingAsync(actionsSnapshot);
-            });
+                    if (prepare.ArtItemsToVerify.Any(i => !i.HasCoverArt))
+                    {
+                        // Pause here rather than awaiting the gate inline: this callback is running
+                        // inside RunBusyAsync, and a human-timescale wait would leave the triage page
+                        // behind pointer-events:none for as long as the user takes on /cover-art.
+                        // Parking the state and returning lets the page stay usable; resolving the
+                        // gate calls back into ResumeImportAfterCoverArtAsync/AbortImportAfterCoverArt.
+                        _coverArtGate.BeginGate(prepare.ArtItemsToVerify, actionsSnapshot);
+                        paused = true;
+                        return;
+                    }
+
+                    var result = await RunImportPipelineAsync(actionsSnapshot);
+                    // The scan-based fail count (not result.FailCount) is authoritative for failures:
+                    // every action type sets Status=Failed on itself regardless of type, which this
+                    // scan catches uniformly. Imported is always 0 here now - a real Lidarr import
+                    // is only confirmed once its VerifyImport action settles, asynchronously (see
+                    // ApplySettledVerifyActionAsync), not synchronously within this call.
+                    var totalFailed = ApplyImportResultsToProposedActions();
+                    summary = new ImportSummary(0, result.MoveSuccessCount, result.SecondaryCopyCount, totalFailed);
+
+                    sentCount = result.NewVerifyActions.Count;
+                    foreach (var newVerify in result.NewVerifyActions)
+                        _verifyImport.Enqueue(newVerify);
+
+                    await RefreshQueueAndArtistsAfterProcessingAsync(actionsSnapshot);
+                });
+            }
 
             // When paused, the caller navigates straight to /cover-art - the page itself is the
             // message, so nothing is posted to the status bar.
@@ -934,10 +979,27 @@ namespace LidarrCompanion.Web.Services
                 _status.ShowError(unlinkPlanFailure);
             else if (backupFailure is not null)
                 _status.ShowError(backupFailure);
-            else if (!paused && summary.HasAnyResult)
-                PostImportSummary(summary);
+            else if (!paused)
+                PostSendSummary(summary, sentCount, retryVerifies.Count);
 
             return summary;
+        }
+
+        // Reports what happened synchronously (moves/unlinks/deletes/failures, via the existing
+        // ImportSummary) plus how many import commands were sent for background verification and
+        // how many stuck rows are being re-checked - there's no confirmed import count to report
+        // yet at this point, that arrives later per-file via ApplySettledVerifyActionAsync.
+        private void PostSendSummary(ImportSummary summary, int sentCount, int retryCount)
+        {
+            var parts = new List<string>();
+            if (summary.HasAnyResult) parts.Add(summary.BuildMessage());
+            if (sentCount > 0) parts.Add($"{sentCount} sent to Lidarr - verifying in the background.");
+            if (retryCount > 0) parts.Add($"Re-checking {retryCount} pending import(s).");
+            if (parts.Count == 0) return;
+
+            var message = string.Join(" ", parts);
+            if (summary.Failed > 0) _status.ShowError(message);
+            else _status.SetInfo(message);
         }
 
         // Applies the "no action = Unlink" rule (see ImplicitUnlink for why and for its scope).
@@ -1002,28 +1064,23 @@ namespace LidarrCompanion.Web.Services
             }
 
             var summary = new ImportSummary(0, 0, 0, 0);
+            int sentCount = 0;
             await RunBusyAsync("Importing files to Lidarr...", async () =>
             {
                 var result = await RunImportPipelineAsync(actionsSnapshot);
                 var totalFailed = ApplyImportResultsToProposedActions();
-                summary = new ImportSummary(result.ImportSuccessCount, result.MoveSuccessCount, result.SecondaryCopyCount, totalFailed);
+                summary = new ImportSummary(0, result.MoveSuccessCount, result.SecondaryCopyCount, totalFailed);
+
+                sentCount = result.NewVerifyActions.Count;
+                foreach (var newVerify in result.NewVerifyActions)
+                    _verifyImport.Enqueue(newVerify);
 
                 await RefreshQueueAndArtistsAfterProcessingAsync(actionsSnapshot);
             });
 
-            if (summary.HasAnyResult)
-                PostImportSummary(summary);
+            PostSendSummary(summary, sentCount, retryCount: 0);
 
             return summary;
-        }
-
-        // Reported via the status bar rather than a blocking alert() - same notification style as
-        // everything else (e.g. "Downloaded N artists from Lidarr."), so a finished import doesn't
-        // need its own dismissal click to get out of the way.
-        private void PostImportSummary(ImportSummary summary)
-        {
-            if (summary.Failed > 0) _status.ShowError(summary.BuildMessage());
-            else _status.SetInfo(summary.BuildMessage());
         }
 
         // Called by the Cover Art page's Abort button. Proposed actions remain unchanged - the
@@ -1055,28 +1112,76 @@ namespace LidarrCompanion.Web.Services
         {
             int failedCount = 0;
 
+            // Sent counts as "done displaying" the same as Success: a Sent Import action has been
+            // superseded by its own VerifyImport row, which is what continues to represent this
+            // file going forward (and settles later, in the background - see
+            // ApplySettledVerifyActionAsync). Verifying/Pending rows are left alone here; they're
+            // still in progress.
             var allProcessedActions = ProposedActions.Where(pa =>
-                !string.IsNullOrWhiteSpace(pa.ImportStatus) &&
-                (pa.ImportStatus.Equals("Success", StringComparison.OrdinalIgnoreCase) || pa.ImportStatus.Equals("Failed", StringComparison.OrdinalIgnoreCase))
+                pa.Status is ImportActionStatus.Success or ImportActionStatus.Sent or ImportActionStatus.Failed
             ).ToList();
 
             foreach (var pa in allProcessedActions)
             {
-                if (string.Equals(pa.ImportStatus, "Success", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (ProposedActions.Contains(pa)) ProposedActions.Remove(pa);
-                }
-                else if (string.Equals(pa.ImportStatus, "Failed", StringComparison.OrdinalIgnoreCase))
-                {
-                    pa.MatchedRelease = pa.ErrorMessage;
+                if (ApplySingleActionOutcome(pa))
                     failedCount++;
-                }
             }
 
             AssignedFileIds.Clear();
             AssignedTrackIds.Clear();
 
             return failedCount;
+        }
+
+        // Removes a settled action from ProposedActions (Success/Sent) or leaves it visible with
+        // its error surfaced via MatchedRelease (Failed). Returns true when it was a failure, so
+        // callers can tally without duplicating the branch. Shared by the synchronous processing
+        // pass above and the background-verify settlement path below.
+        private bool ApplySingleActionOutcome(ProposedAction pa)
+        {
+            if (pa.Status is ImportActionStatus.Success or ImportActionStatus.Sent)
+            {
+                if (ProposedActions.Contains(pa)) ProposedActions.Remove(pa);
+                return false;
+            }
+
+            if (pa.Status == ImportActionStatus.Failed)
+            {
+                pa.MatchedRelease = pa.ErrorMessage;
+                return true;
+            }
+
+            return false;
+        }
+
+        // Called by the Import page (via InvokeAsync, from its VerifyActionSettled subscription -
+        // see TriageService's constructor) once a background VerifyImport action reaches Success or
+        // exhausts its retries. This is where a real Lidarr import is actually confirmed - the
+        // pipeline that sent the command only got as far as Status=Sent (see ProcessImportGroup).
+        // Must run on the page's sync context: it removes from ProposedActions (an
+        // ObservableCollection) and may reload ManualImportFiles/ArtistReleaseTracks, neither of
+        // which is safe to do from VerifyImportService's own background thread.
+        public async Task ApplySettledVerifyActionAsync(ProposedAction settled)
+        {
+            var failed = ApplySingleActionOutcome(settled);
+
+            if (failed)
+                _status.ShowError($"{settled.OriginalFileName}: {settled.ErrorMessage}");
+            else
+                _status.SetInfo($"Verified import: {settled.OriginalFileName}");
+
+            var record = QueueRecords.FirstOrDefault(r =>
+                ImplicitUnlink.IsSameRelease(r.DownloadId, r.Title, new ImplicitUnlink.ReleaseKey(settled.DownloadId ?? string.Empty, settled.OriginalRelease ?? string.Empty)));
+
+            if (record is not null)
+                _prefetch.InvalidateReleaseFiles(record.OutputPath);
+            if (!failed && !string.IsNullOrWhiteSpace(settled.MatchedArtist))
+                _prefetch.InvalidateArtistTracks(settled.MatchedArtist);
+
+            // If the user is still looking at this release, refresh what's on screen live rather
+            // than leaving it showing the file as still-unimported/still-there.
+            if (record is not null && SelectedQueueRecord == record)
+                await OnQueueRecordSelectedAsync(record);
         }
 
         #endregion

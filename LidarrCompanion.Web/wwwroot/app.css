@@ -727,12 +727,13 @@ h1:focus {
 .triage-tracks table th:nth-child(5), .triage-tracks table td:nth-child(5) { width: 10%; }
 
 /* Actions to Take: Type / FileName / OriginalRelease / MatchedArtist / MatchedTrack / MatchedRelease */
-.triage-proposed-body .triage-table th:nth-child(1), .triage-proposed-body .triage-table td:nth-child(1) { width: 12%; }
-.triage-proposed-body .triage-table th:nth-child(2), .triage-proposed-body .triage-table td:nth-child(2) { width: 20%; }
-.triage-proposed-body .triage-table th:nth-child(3), .triage-proposed-body .triage-table td:nth-child(3) { width: 20%; }
-.triage-proposed-body .triage-table th:nth-child(4), .triage-proposed-body .triage-table td:nth-child(4) { width: 16%; }
-.triage-proposed-body .triage-table th:nth-child(5), .triage-proposed-body .triage-table td:nth-child(5) { width: 16%; }
-.triage-proposed-body .triage-table th:nth-child(6), .triage-proposed-body .triage-table td:nth-child(6) { width: 16%; }
+.triage-proposed-body .triage-table th:nth-child(1), .triage-proposed-body .triage-table td:nth-child(1) { width: 10%; }
+.triage-proposed-body .triage-table th:nth-child(2), .triage-proposed-body .triage-table td:nth-child(2) { width: 18%; }
+.triage-proposed-body .triage-table th:nth-child(3), .triage-proposed-body .triage-table td:nth-child(3) { width: 16%; }
+.triage-proposed-body .triage-table th:nth-child(4), .triage-proposed-body .triage-table td:nth-child(4) { width: 14%; }
+.triage-proposed-body .triage-table th:nth-child(5), .triage-proposed-body .triage-table td:nth-child(5) { width: 14%; }
+.triage-proposed-body .triage-table th:nth-child(6), .triage-proposed-body .triage-table td:nth-child(6) { width: 14%; }
+.triage-proposed-body .triage-table th:nth-child(7), .triage-proposed-body .triage-table td:nth-child(7) { width: 14%; }
 
 .triage-table td.numeric {
     text-align: right;

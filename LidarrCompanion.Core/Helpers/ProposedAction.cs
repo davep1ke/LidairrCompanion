@@ -34,9 +34,11 @@ namespace LidarrCompanion.Helpers
         // New: destination name for MoveToDestination actions
         public string DestinationName { get; set; } = string.Empty;
 
-        // New: import status and error message
-        private string _importStatus = string.Empty;
-        public string ImportStatus { get => _importStatus; set { if (_importStatus != value) { _importStatus = value; OnPropertyChanged(nameof(ImportStatus)); OnPropertyChanged(nameof(IsImportFailed)); } } }
+        // Processing state (see ImportActionStatus) and error text. State and its display text are
+        // deliberately separate - see ImportActionDisplay.Describe for the human-readable label,
+        // computed from Status/RetryCount/MaxRetries/ErrorMessage rather than stored redundantly.
+        private ImportActionStatus _status = ImportActionStatus.Pending;
+        public ImportActionStatus Status { get => _status; set { if (_status != value) { _status = value; OnPropertyChanged(nameof(Status)); OnPropertyChanged(nameof(IsImportFailed)); } } }
 
         private string _errorMessage = string.Empty;
         public string ErrorMessage { get => _errorMessage; set { if (_errorMessage != value) { _errorMessage = value; OnPropertyChanged(nameof(ErrorMessage)); OnPropertyChanged(nameof(IsImportFailed)); } } }
@@ -45,13 +47,17 @@ namespace LidarrCompanion.Helpers
         // without any action (see ImplicitUnlink). They're regenerated on every processing run.
         public bool IsImplicitUnlink { get; set; }
 
-        public bool IsImportFailed => !string.IsNullOrWhiteSpace(_errorMessage) || string.Equals(_importStatus, "Failed", StringComparison.OrdinalIgnoreCase);
+        public bool IsImportFailed => !string.IsNullOrWhiteSpace(_errorMessage) || _status == ImportActionStatus.Failed;
+
+        // Set once a backup of this action's file genuinely succeeds, so a later reprocess (e.g.
+        // retrying a stuck VerifyImport) never re-validates the source file just to back it up
+        // again - see ImportActionRules.RequiresSourceFile for the other half of that guard.
+        public bool BackedUp { get; set; }
 
         // Retry tracking for VerifyImport actions
         public int RetryCount { get; set; }
         public int MaxRetries { get; set; }
         public DateTime? LastRetryAttempt { get; set; }
-        public int? TrackFileIdToVerify { get; set; }
 
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string propName)

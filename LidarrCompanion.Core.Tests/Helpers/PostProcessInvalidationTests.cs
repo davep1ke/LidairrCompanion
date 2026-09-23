@@ -4,25 +4,25 @@ namespace LidarrCompanion.Core.Tests.Helpers
 {
     public class PostProcessInvalidationTests
     {
-        private static ProposedAction Action(ProposalActionType type, string status, string release = "Rel",
+        private static ProposedAction Action(ProposalActionType type, ImportActionStatus status, string release = "Rel",
             string dl = "dl1", string? artist = "Artist") => new()
         {
             Action = type,
-            ImportStatus = status,
+            Status = status,
             OriginalRelease = release,
             DownloadId = dl,
             MatchedArtist = artist ?? string.Empty
         };
 
         [Fact]
-        public void ReleasesToInvalidate_IncludesEverySuccessfulActionType_NotJustImport()
+        public void ReleasesToInvalidate_IncludesEverySuccessfulActionType()
         {
             var actions = new[]
             {
-                Action(ProposalActionType.Import, "Success", "A", "dlA"),
-                Action(ProposalActionType.Unlink, "Success", "B", "dlB"),
-                Action(ProposalActionType.Delete, "Success", "C", "dlC"),
-                Action(ProposalActionType.MoveToDestination, "Success", "D", "dlD"),
+                Action(ProposalActionType.VerifyImport, ImportActionStatus.Success, "A", "dlA"),
+                Action(ProposalActionType.Unlink, ImportActionStatus.Success, "B", "dlB"),
+                Action(ProposalActionType.Delete, ImportActionStatus.Success, "C", "dlC"),
+                Action(ProposalActionType.MoveToDestination, ImportActionStatus.Success, "D", "dlD"),
             };
 
             var result = PostProcessInvalidation.ReleasesToInvalidate(actions);
@@ -33,18 +33,18 @@ namespace LidarrCompanion.Core.Tests.Helpers
         }
 
         [Fact]
-        public void ReleasesToInvalidate_ExcludesFailedActions()
+        public void ReleasesToInvalidate_ExcludesActionsThatHaventSettled()
         {
+            // A plain Import action never reaches Success under the current status model - it tops
+            // out at Sent, with its VerifyImport sibling carrying the real outcome.
             var actions = new[]
             {
-                Action(ProposalActionType.Import, "Success", "A"),
-                Action(ProposalActionType.Import, "Failed", "B", "dlB"),
+                Action(ProposalActionType.Import, ImportActionStatus.Sent, "A"),
+                Action(ProposalActionType.VerifyImport, ImportActionStatus.Verifying, "A"),
+                Action(ProposalActionType.Import, ImportActionStatus.Failed, "B", "dlB"),
             };
 
-            var result = PostProcessInvalidation.ReleasesToInvalidate(actions);
-
-            Assert.Single(result);
-            Assert.Equal("A", result[0].OriginalRelease);
+            Assert.Empty(PostProcessInvalidation.ReleasesToInvalidate(actions));
         }
 
         [Fact]
@@ -52,22 +52,23 @@ namespace LidarrCompanion.Core.Tests.Helpers
         {
             var actions = new[]
             {
-                Action(ProposalActionType.Import, "Success", "A", "dlA"),
-                Action(ProposalActionType.Unlink, "Success", "A", "dlA"),
+                Action(ProposalActionType.VerifyImport, ImportActionStatus.Success, "A", "dlA"),
+                Action(ProposalActionType.Unlink, ImportActionStatus.Success, "A", "dlA"),
             };
 
             Assert.Single(PostProcessInvalidation.ReleasesToInvalidate(actions));
         }
 
         [Fact]
-        public void ArtistsToInvalidate_OnlySuccessfulImports()
+        public void ArtistsToInvalidate_OnlySuccessfulVerifyImport()
         {
             var actions = new[]
             {
-                Action(ProposalActionType.Import, "Success", artist: "Artist A"),
-                Action(ProposalActionType.Import, "Failed", artist: "Artist B"),
-                Action(ProposalActionType.Unlink, "Success", artist: "Artist C"),
-                Action(ProposalActionType.Delete, "Success", artist: "Artist D"),
+                Action(ProposalActionType.VerifyImport, ImportActionStatus.Success, artist: "Artist A"),
+                Action(ProposalActionType.VerifyImport, ImportActionStatus.Failed, artist: "Artist B"),
+                Action(ProposalActionType.Import, ImportActionStatus.Sent, artist: "Artist E"), // never reaches Success
+                Action(ProposalActionType.Unlink, ImportActionStatus.Success, artist: "Artist C"),
+                Action(ProposalActionType.Delete, ImportActionStatus.Success, artist: "Artist D"),
             };
 
             var result = PostProcessInvalidation.ArtistsToInvalidate(actions);
@@ -80,8 +81,8 @@ namespace LidarrCompanion.Core.Tests.Helpers
         {
             var actions = new[]
             {
-                Action(ProposalActionType.Import, "Success", artist: "Artist A"),
-                Action(ProposalActionType.Import, "Success", artist: "artist a"),
+                Action(ProposalActionType.VerifyImport, ImportActionStatus.Success, artist: "Artist A"),
+                Action(ProposalActionType.VerifyImport, ImportActionStatus.Success, artist: "artist a"),
             };
 
             Assert.Single(PostProcessInvalidation.ArtistsToInvalidate(actions));
@@ -90,7 +91,7 @@ namespace LidarrCompanion.Core.Tests.Helpers
         [Fact]
         public void ArtistsToInvalidate_SkipsBlankMatchedArtist()
         {
-            var actions = new[] { Action(ProposalActionType.Import, "Success", artist: "") };
+            var actions = new[] { Action(ProposalActionType.VerifyImport, ImportActionStatus.Success, artist: "") };
 
             Assert.Empty(PostProcessInvalidation.ArtistsToInvalidate(actions));
         }

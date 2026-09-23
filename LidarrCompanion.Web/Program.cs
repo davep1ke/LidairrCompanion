@@ -62,6 +62,10 @@ builder.Services.AddSingleton<CoverArtGateService>();
 // cache) and a hosted service (so ASP.NET Core actually starts its background ExecuteAsync loop).
 builder.Services.AddSingleton<PrefetchService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<PrefetchService>());
+// Same singleton + hosted service shape as PrefetchService, and for the same reason: TriageService
+// injects it directly to enqueue post-import verification jobs and subscribe to their completion.
+builder.Services.AddSingleton<VerifyImportService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<VerifyImportService>());
 // Singleton, not Scoped: see the comment on TriageService itself - the /audio/stream endpoint
 // below runs in its own per-request DI scope, so it needs to resolve the same instance the
 // Blazor circuit is using, which only a Singleton registration guarantees.
